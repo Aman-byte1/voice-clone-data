@@ -135,7 +135,6 @@ def main():
     push_dataset(
         output_dir=args.output_dir,
         repo_name=args.repo_name,
-        split_name=args.split_name,
         private=args.private,
     )
 
