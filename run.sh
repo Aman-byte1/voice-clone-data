@@ -40,29 +40,33 @@ export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 huggingface-cli login --token "$HF_TOKEN" || true
 echo "✓ HuggingFace token configured"
 
-# ── 3. Run voice cloning ──────────────────────────────────────────────────
+# ── 3. Run voice cloning & Push (All Splits) ────────────────────────────────
 echo ""
 echo "[3/4] Running voice cloning (Scicom Multilingual-TTS on ACL 60/60)..."
 echo "       Dataset: amanuelbyte/acl6060-voice-cloning"
+echo "       Splits: train, test"
 echo "       Target languages: fr, ar"
-echo "       This may take a while..."
+echo "       This will take a while..."
 
 python clone_with_scicom.py \
     --dataset amanuelbyte/acl6060-voice-cloning \
+    --splits train,test \
     --output_dir ./output/acl6060_scicom \
     --target_languages fr,ar \
     --device cuda \
     --temperature 0.8
 
-echo "✓ Voice cloning complete"
+echo "✓ Voice cloning complete for all splits"
 
-# ── 4. Push dataset to HuggingFace ─────────────────────────────────────────
+# ── 4. Push all splits to HuggingFace ──────────────────────────────────────
 echo ""
 echo "[4/4] Pushing dataset to HuggingFace..."
-
 python push_to_hub.py \
     --output_dir ./output/acl6060_scicom \
     --repo_name amanuelbyte/acl6060-voice-cloning-multilingual
+
+echo "✓ Push complete"
+
 
 echo ""
 echo "============================================"

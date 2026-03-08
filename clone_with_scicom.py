@@ -220,60 +220,43 @@ def ensure_dir(path: str) -> str:
     return path
 
 
-def process_dataset(
+def process_split(
     dataset_name: str,
     output_dir: str,
     target_languages: list[str],
-    split: str | None = None,
-    max_rows: int | None = None,
-    device: str = "cuda",
-    max_new_tokens: int = 2048,
-    temperature: float = 0.8,
+    split: str,
+    max_rows: int | None,
+    device: str,
+    max_new_tokens: int,
+    temperature: float,
+    model,
+    tokenizer,
+    codec,
 ):
-    """
-    Process a dataset with true voice cloning.
-
-    For each row:
-    1. Encode source/reference audio -> codec tokens (captures speaker voice)
-    2. Get translated text from existing dataset columns
-    3. Generate cloned speech preserving original speaker's voice
-    """
+    """Process a single split."""
     config = DATASET_CONFIGS[dataset_name]
-    use_split = split or config["default_split"]
+    split_dir = ensure_dir(os.path.join(output_dir, split))
+    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio"))
 
-    audio_dir = ensure_dir(os.path.join(output_dir, "cloned_audio"))
-
-    # Load dataset
-    print(f"Loading dataset: {dataset_name} (split={use_split})")
-    ds = load_dataset(dataset_name, split=use_split)
+    print(f"\n========================================")
+    print(f" Processing split: {split}")
+    print(f"========================================")
+    
+    ds = load_dataset(dataset_name, split=split)
     if max_rows and max_rows < len(ds):
         ds = ds.select(range(max_rows))
         print(f"  Selected first {max_rows} rows.")
     print(f"  Total rows: {len(ds)}")
-    print(f"  Columns: {ds.column_names}")
 
-    # Validate target languages
     available_langs = config["text_columns"]
-    for lang in target_languages:
-        if lang not in available_langs:
-            print(
-                f"  ⚠ Language '{lang}' not available in {dataset_name}. "
-                f"Available: {list(available_langs.keys())}"
-            )
-
-    model, tokenizer, codec = load_models(device=device)
-
     records = []
     total = len(ds) * len(target_languages)
-    pbar = tqdm(total=total, desc="Voice cloning", unit="clip")
+    pbar = tqdm(total=total, desc=f"Cloning {split}", unit="clip")
 
     for idx in range(len(ds)):
         row = ds[idx]
-
-        # ── Extract audio and encode speaker identity ───────────────────
         audio_data = row.get(config["audio_col"])
         if audio_data is None:
-            print(f"\n  ⚠ Row {idx}: no audio found, skipping.")
             pbar.update(len(target_languages))
             continue
 
@@ -288,7 +271,6 @@ def process_dataset(
             pbar.update(len(target_languages))
             continue
 
-        # ── Build record ────────────────────────────────────────────────
         row_id = row.get(config["id_col"], idx)
         row_record = {
             "index": row_id,
@@ -297,20 +279,16 @@ def process_dataset(
         if config["speaker_col"] and config["speaker_col"] in ds.column_names:
             row_record["speaker_id"] = row.get(config["speaker_col"], "")
 
-        # Copy existing text columns
         for lang_code, col_name in available_langs.items():
             if col_name in ds.column_names:
                 row_record[f"text_{lang_code}"] = row.get(col_name, "")
 
-        # ── Generate cloned speech per target language ──────────────────
         for target_lang in target_languages:
             lang_audio_dir = ensure_dir(os.path.join(audio_dir, target_lang))
-
             text_col = available_langs.get(target_lang)
             target_text = row.get(text_col, "") if text_col else ""
 
             if not target_text:
-                print(f"\n  ⚠ Row {idx}: no text for '{target_lang}', skipping.")
                 row_record[f"cloned_voice_{target_lang}"] = ""
                 pbar.update(1)
                 continue
@@ -320,60 +298,66 @@ def process_dataset(
 
             try:
                 generated_text = generate_cloned_speech(
-                    model=model,
-                    tokenizer=tokenizer,
-                    reference_text=source_text,
-                    reference_tokens=ref_tokens,
-                    target_text=target_text,
-                    max_new_tokens=max_new_tokens,
+                    model=model, tokenizer=tokenizer,
+                    reference_text=source_text, reference_tokens=ref_tokens,
+                    target_text=target_text, max_new_tokens=max_new_tokens,
                     temperature=temperature,
                 )
-
                 audio_waveform = decode_audio_tokens(generated_text, codec, device)
-
                 if audio_waveform is not None and len(audio_waveform) > 0:
                     sf.write(filepath, audio_waveform, OUTPUT_SAMPLE_RATE)
-                    row_record[f"cloned_voice_{target_lang}"] = os.path.relpath(
-                        filepath, output_dir
-                    )
+                    row_record[f"cloned_voice_{target_lang}"] = os.path.relpath(filepath, split_dir)
                 else:
-                    print(f"\n  ⚠ Row {idx} -> {target_lang}: no audio tokens generated.")
                     row_record[f"cloned_voice_{target_lang}"] = ""
-
             except Exception as e:
                 print(f"\n  ✗ Row {idx} -> {target_lang}: {e}")
                 row_record[f"cloned_voice_{target_lang}"] = ""
 
             pbar.update(1)
-
         records.append(row_record)
-
     pbar.close()
 
-    # ── Save metadata ───────────────────────────────────────────────────────
     if records:
         df = pd.DataFrame(records)
-        csv_path = os.path.join(output_dir, "metadata_cloned.csv")
+        csv_path = os.path.join(split_dir, "metadata_cloned.csv")
         df.to_csv(csv_path, index=False)
-        print(f"\n✓ Saved {len(records)} records to {csv_path}")
+        print(f"✓ Saved {len(records)} records for {split} to {csv_path}")
 
-        json_path = os.path.join(output_dir, "metadata_cloned.json")
-        df.to_json(json_path, orient="records", force_ascii=False, indent=2)
-        print(f"✓ Saved metadata JSON to {json_path}")
 
-        # Summary
-        print("\n── Voice Cloning Summary ──")
-        print(f"  Model:           {MODEL_NAME}")
-        print(f"  Source dataset:   {dataset_name} ({use_split})")
-        print(f"  Total rows:      {len(records)}")
-        print(f"  Target languages: {target_languages}")
-        for lang in target_languages:
-            col = f"cloned_voice_{lang}"
-            filled = df[col].astype(bool).sum() if col in df.columns else 0
-            print(f"  Cloned [{lang}]:    {filled}/{len(records)} successful")
-        print(f"  Output dir:      {os.path.abspath(output_dir)}")
-    else:
-        print("\n⚠ No records were processed.")
+def process_dataset(
+    dataset_name: str,
+    output_dir: str,
+    target_languages: list[str],
+    splits: list[str] | None = None,
+    max_rows: int | None = None,
+    device: str = "cuda",
+    max_new_tokens: int = 2048,
+    temperature: float = 0.8,
+):
+    """Process multiple splits with true voice cloning."""
+    config = DATASET_CONFIGS[dataset_name]
+    use_splits = splits if splits else [config["default_split"]]
+
+    model, tokenizer, codec = load_models(device=device)
+
+    for split in use_splits:
+        process_split(
+            dataset_name=dataset_name,
+            output_dir=output_dir,
+            target_languages=target_languages,
+            split=split,
+            max_rows=max_rows,
+            device=device,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            model=model,
+            tokenizer=tokenizer,
+            codec=codec,
+        )
+
+    print("\n── Multi-Split Voice Cloning Complete ──")
+    print(f"  Output dir: {os.path.abspath(output_dir)}")
+    print(f"  Splits processed: {use_splits}")
 
 
 # ─── CLI ────────────────────────────────────────────────────────────────────────
@@ -406,12 +390,12 @@ It performs TRUE voice cloning: the source speaker's voice is preserved.
         help="Comma-separated target language codes.",
     )
     parser.add_argument(
-        "--split", type=str, default=None,
-        help="Dataset split (auto-detected if not provided).",
+        "--splits", type=str, default=None,
+        help="Comma-separated list of dataset splits (e.g., 'train,test'). Auto-detects if None.",
     )
     parser.add_argument(
         "--max_rows", type=int, default=None,
-        help="Max rows to process (None = all).",
+        help="Max rows to process per split (None = all).",
     )
     parser.add_argument(
         "--device", type=str, default="cuda", choices=["cuda", "cpu"],
@@ -431,6 +415,7 @@ It performs TRUE voice cloning: the source speaker's voice is preserved.
 def main():
     args = parse_args()
     target_languages = [l.strip() for l in args.target_languages.split(",")]
+    splits = [s.strip() for s in args.splits.split(",")] if args.splits else None
 
     config = DATASET_CONFIGS[args.dataset]
     available = list(config["text_columns"].keys())
@@ -448,7 +433,7 @@ def main():
     print("=" * 60)
     print(f"  Model:            {MODEL_NAME}")
     print(f"  Dataset:          {args.dataset}")
-    print(f"  Split:            {args.split or config['default_split']}")
+    print(f"  Splits:           {splits or config['default_split']}")
     print(f"  Target languages: {target_languages}")
     print(f"  Max rows:         {args.max_rows or 'all'}")
     print(f"  Output dir:       {args.output_dir}")
@@ -460,7 +445,7 @@ def main():
         dataset_name=args.dataset,
         output_dir=args.output_dir,
         target_languages=target_languages,
-        split=args.split,
+        splits=splits,
         max_rows=args.max_rows,
         device=args.device,
         max_new_tokens=args.max_new_tokens,
