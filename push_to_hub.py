@@ -72,31 +72,29 @@ def push_dataset(
         df = pd.read_csv(csv_path)
         print(f"  Rows: {len(df)}, Columns: {list(df.columns)}")
 
+        from datasets import Features, Value, Audio
+
         # Resolve audio paths to absolute paths
         audio_columns = [c for c in df.columns if c.startswith("voice_")]
-        for col in audio_columns:
-            df[col] = df[col].apply(
-                lambda x: os.path.join(split_dir, x) if pd.notna(x) and x != "" else None
-            )
-
-        # Build Dictionary of Lists for Dataset
         data_dict = df.to_dict(orient="list")
         
         # Replace Empty Strings / NaNs in audio columns with proper None
         for col in audio_columns:
             data_dict[col] = [
-                m if pd.notna(m) and str(m).strip() != "" else None 
+                os.path.abspath(os.path.join(split_dir, m)) if pd.notna(m) and str(m).strip() != "" else None 
                 for m in data_dict[col]
             ]
             
-        ds = Dataset.from_dict(data_dict)
-
-        # Cast audio columns to Audio type
+        # First, infer types naturally
+        ds_temp = Dataset.from_dict(data_dict)
+        
+        # Then, build strict features targeting the Audio columns
+        final_features = ds_temp.features.copy()
         for col in audio_columns:
-            try:
-                ds = ds.cast_column(col, Audio())
-            except Exception as e:
-                print(f"  ⚠ Could not cast '{col}' as Audio: {e}")
+            final_features[col] = Audio()
+            
+        # Re-initialize dataset with strict features
+        ds = Dataset.from_dict(data_dict, features=final_features)
 
         dataset_dict[split_name] = ds
         print(f"  ✓ Added split '{split_name}' with {len(ds)} rows")
