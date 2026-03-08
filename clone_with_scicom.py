@@ -293,7 +293,7 @@ def process_split(
         temp_record["text_en"] = source_text # Ensure fallback mapping
 
         # Ensure en audio exists in the dataset output
-        temp_record["cloned_voice_en"] = original_audio_path
+        temp_record["voice_en"] = original_audio_path
 
         for target_lang in target_languages:
             lang_audio_dir = ensure_dir(os.path.join(audio_dir, target_lang))
@@ -301,7 +301,7 @@ def process_split(
             target_text = row.get(text_col, "") if text_col else ""
 
             if not target_text:
-                temp_record[f"cloned_voice_{target_lang}"] = ""
+                temp_record[f"voice_{target_lang}"] = ""
                 pbar.update(1)
                 continue
 
@@ -318,29 +318,29 @@ def process_split(
                 audio_waveform = decode_audio_tokens(generated_text, codec, device)
                 if audio_waveform is not None and len(audio_waveform) > 0:
                     sf.write(filepath, audio_waveform, OUTPUT_SAMPLE_RATE)
-                    temp_record[f"cloned_voice_{target_lang}"] = os.path.relpath(filepath, split_dir)
+                    temp_record[f"voice_{target_lang}"] = os.path.relpath(filepath, split_dir)
                 else:
-                    temp_record[f"cloned_voice_{target_lang}"] = ""
+                    temp_record[f"voice_{target_lang}"] = ""
             except Exception as e:
                 print(f"\n  ✗ Row {idx} -> {target_lang}: {e}")
-                temp_record[f"cloned_voice_{target_lang}"] = ""
+                temp_record[f"voice_{target_lang}"] = ""
 
             pbar.update(1)
 
         # Build final record with specific column order
         final_record = {}
         
-        # 1. En text and En audio
+        # 1. En text and En audio (Original)
         final_record["text_en"] = temp_record.get("text_en", "")
-        final_record["cloned_voice_en"] = temp_record.get("cloned_voice_en", "")
+        final_record["voice_en"] = temp_record.get("voice_en", "")
         
-        # 2. Ar text and Ar audio (if available)
+        # 2. Ar text and Ar audio (Cloned)
         final_record["text_ar"] = temp_record.get("text_ar", "")
-        final_record["cloned_voice_ar"] = temp_record.get("cloned_voice_ar", "")
+        final_record["voice_ar"] = temp_record.get("voice_ar", "")
         
-        # 3. Fr text and Fr audio (if available)
+        # 3. Fr text and Fr audio (Cloned)
         final_record["text_fr"] = temp_record.get("text_fr", "")
-        final_record["cloned_voice_fr"] = temp_record.get("cloned_voice_fr", "")
+        final_record["voice_fr"] = temp_record.get("voice_fr", "")
 
         # 4. Remaining columns
         for k, v in row.items():

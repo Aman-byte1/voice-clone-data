@@ -73,7 +73,7 @@ def push_dataset(
         print(f"  Rows: {len(df)}, Columns: {list(df.columns)}")
 
         # Resolve audio paths to absolute paths
-        audio_columns = [c for c in df.columns if c.startswith("cloned_voice_")]
+        audio_columns = [c for c in df.columns if c.startswith("voice_")]
         for col in audio_columns:
             df[col] = df[col].apply(
                 lambda x: os.path.join(split_dir, x) if pd.notna(x) and x != "" else None
