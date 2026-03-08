@@ -1,0 +1,16 @@
+# Shared
+datasets
+soundfile
+pandas
+huggingface_hub
+tqdm
+torch
+librosa
+
+# For MagpieTTS (generate_synthetic_dataset.py, clone_acl6060_voices.py)
+nemo_toolkit[tts]
+kaldialign
+
+# For Scicom Multilingual-TTS (clone_with_scicom.py)
+transformers
+neucodec
