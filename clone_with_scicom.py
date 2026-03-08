@@ -1,25 +1,30 @@
 """
-Clone voices from the ACL 60/60 dataset using Scicom Multilingual-TTS-1.7B-Base.
+Clone voices from ACL datasets using Scicom Multilingual-TTS-1.7B-Base.
+
+Supports two dataset sources:
+  1. amanuelbyte/acl6060-voice-cloning (existing dataset with reference_audio_path)
+  2. ymoslem/acl-6060 (original ACL 60/60 with source audio)
 
 This model supports:
   - 150+ languages (including Arabic!)
   - True voice cloning from a reference audio
   - Multi-speaker, multilingual generation
 
-For each row in the ACL 60/60 dataset, this script:
-1. Encodes the source audio into codec tokens (speaker identity)
-2. Uses the translated text + speaker tokens to generate cloned speech
-   in each target language
-3. Saves audio files and metadata
-
 Usage:
+    # Using the existing amanuelbyte dataset (default):
     python clone_with_scicom.py \\
         --output_dir ./output/acl6060_scicom \\
         --target_languages fr,zh,ar \\
-        --split dev \\
-        --max_rows 468
+        --max_rows 40
 
-    # Quick test on first 5 rows:
+    # Using the original ymoslem/acl-6060 dataset:
+    python clone_with_scicom.py \\
+        --dataset ymoslem/acl-6060 \\
+        --output_dir ./output/acl6060_scicom \\
+        --target_languages fr,zh,ar \\
+        --split dev
+
+    # Quick test:
     python clone_with_scicom.py \\
         --output_dir ./output/acl6060_scicom \\
         --target_languages fr \\
@@ -46,23 +51,44 @@ from tqdm import tqdm
 # ─── Constants ──────────────────────────────────────────────────────────────────
 
 MODEL_NAME = "Scicom-intl/Multilingual-TTS-1.7B-Base"
-DATASET_NAME = "ymoslem/acl-6060"
 OUTPUT_SAMPLE_RATE = 24000  # NeuCodec outputs 24kHz
 CODEC_INPUT_SR = 16000      # NeuCodec expects 16kHz input
 
-# Text columns in the ACL 60/60 dataset
-ACL_TEXT_COLUMNS = {
-    "en": "text_en",
-    "ar": "text_ar",
-    "de": "text_de",
-    "fa": "text_fa",
-    "fr": "text_fr",
-    "ja": "text_ja",
-    "nl": "text_nl",
-    "pt": "text_pt",
-    "ru": "text_ru",
-    "tr": "text_tr",
-    "zh": "text_zh",
+# ── Dataset configs ─────────────────────────────────────────────────────────
+
+DATASET_CONFIGS = {
+    "amanuelbyte/acl6060-voice-cloning": {
+        "audio_col": "reference_audio_path",
+        "source_text_col": "reference_text_en",
+        "text_columns": {
+            "en": "target_text_en",
+            "ar": "target_text_ar",
+            "fr": "target_text_fr",
+        },
+        "default_split": "train",
+        "id_col": "sample_id",
+        "speaker_col": "speaker_id",
+    },
+    "ymoslem/acl-6060": {
+        "audio_col": "audio",
+        "source_text_col": "text_en",
+        "text_columns": {
+            "en": "text_en",
+            "ar": "text_ar",
+            "de": "text_de",
+            "fa": "text_fa",
+            "fr": "text_fr",
+            "ja": "text_ja",
+            "nl": "text_nl",
+            "pt": "text_pt",
+            "ru": "text_ru",
+            "tr": "text_tr",
+            "zh": "text_zh",
+        },
+        "default_split": "dev",
+        "id_col": "index",
+        "speaker_col": None,
+    },
 }
 
 
@@ -106,12 +132,6 @@ def encode_reference_audio(audio_array: np.ndarray, sr: int, codec, device: str 
     """
     Encode a reference audio into codec tokens for voice cloning.
 
-    Args:
-        audio_array: Audio waveform as numpy array.
-        sr: Sample rate of the audio.
-        codec: Loaded NeuCodec instance.
-        device: Device string.
-
     Returns:
         String of codec tokens like '<|s_0|><|s_1|>...'
     """
@@ -132,15 +152,9 @@ def decode_audio_tokens(generated_text: str, codec, device: str = "cuda") -> np.
     """
     Extract audio tokens from generated text and decode to waveform.
 
-    Args:
-        generated_text: Full generated text from the model.
-        codec: Loaded NeuCodec instance.
-        device: Device string.
-
     Returns:
         Audio waveform as numpy array, or None if no tokens found.
     """
-    # Extract the last speech segment's tokens
     parts = generated_text.split("<|speech_start|>")
     if len(parts) < 2:
         return None
@@ -178,19 +192,6 @@ def generate_cloned_speech(
     Uses the voice cloning prompt format:
       <|im_start|>{ref_text}<|speech_start|>{ref_tokens}<|im_end|>
       <|im_start|>{target_text}<|speech_start|>
-
-    Args:
-        model: Loaded CausalLM model.
-        tokenizer: Loaded tokenizer.
-        reference_text: Text spoken in the reference audio.
-        reference_tokens: Codec tokens from the reference audio.
-        target_text: Text to synthesize in the cloned voice.
-        max_new_tokens: Max tokens to generate.
-        temperature: Sampling temperature.
-        repetition_penalty: Repetition penalty.
-
-    Returns:
-        Full generated text including audio tokens.
     """
     prompt = (
         f"<|im_start|>{reference_text}<|speech_start|>{reference_tokens}<|im_end|>"
@@ -215,42 +216,51 @@ def generate_cloned_speech(
 
 
 def ensure_dir(path: str) -> str:
-    """Create directory if it doesn't exist and return the path."""
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def load_acl_dataset(split: str = "dev", max_rows: int | None = None):
-    """Load the ACL 60/60 dataset from HuggingFace."""
-    print(f"Loading dataset: {DATASET_NAME} (split={split})")
-    ds = load_dataset(DATASET_NAME, split=split)
-    if max_rows and max_rows < len(ds):
-        ds = ds.select(range(max_rows))
-        print(f"  Selected first {max_rows} rows.")
-    print(f"  Total rows: {len(ds)}")
-    print(f"  Columns: {ds.column_names}")
-    return ds
-
-
 def process_dataset(
+    dataset_name: str,
     output_dir: str,
     target_languages: list[str],
-    split: str = "dev",
+    split: str | None = None,
     max_rows: int | None = None,
     device: str = "cuda",
     max_new_tokens: int = 2048,
     temperature: float = 0.8,
 ):
     """
-    Process the ACL 60/60 dataset with true voice cloning.
+    Process a dataset with true voice cloning.
 
     For each row:
-    1. Encode source audio -> codec tokens (captures speaker voice)
-    2. For each target language, generate cloned speech using the
-       reference voice + translated text
+    1. Encode source/reference audio -> codec tokens (captures speaker voice)
+    2. Get translated text from existing dataset columns
+    3. Generate cloned speech preserving original speaker's voice
     """
+    config = DATASET_CONFIGS[dataset_name]
+    use_split = split or config["default_split"]
+
     audio_dir = ensure_dir(os.path.join(output_dir, "cloned_audio"))
-    ds = load_acl_dataset(split=split, max_rows=max_rows)
+
+    # Load dataset
+    print(f"Loading dataset: {dataset_name} (split={use_split})")
+    ds = load_dataset(dataset_name, split=use_split)
+    if max_rows and max_rows < len(ds):
+        ds = ds.select(range(max_rows))
+        print(f"  Selected first {max_rows} rows.")
+    print(f"  Total rows: {len(ds)}")
+    print(f"  Columns: {ds.column_names}")
+
+    # Validate target languages
+    available_langs = config["text_columns"]
+    for lang in target_languages:
+        if lang not in available_langs:
+            print(
+                f"  ⚠ Language '{lang}' not available in {dataset_name}. "
+                f"Available: {list(available_langs.keys())}"
+            )
+
     model, tokenizer, codec = load_models(device=device)
 
     records = []
@@ -260,8 +270,8 @@ def process_dataset(
     for idx in range(len(ds)):
         row = ds[idx]
 
-        # ── Extract source audio and encode speaker identity ────────────
-        audio_data = row.get("audio")
+        # ── Extract audio and encode speaker identity ───────────────────
+        audio_data = row.get(config["audio_col"])
         if audio_data is None:
             print(f"\n  ⚠ Row {idx}: no audio found, skipping.")
             pbar.update(len(target_languages))
@@ -269,9 +279,8 @@ def process_dataset(
 
         audio_array = np.array(audio_data["array"], dtype=np.float32)
         sr = audio_data["sampling_rate"]
-        source_text = row.get("text_en", "")
+        source_text = row.get(config["source_text_col"], "")
 
-        # Encode reference audio into codec tokens (speaker identity)
         try:
             ref_tokens = encode_reference_audio(audio_array, sr, codec, device)
         except Exception as e:
@@ -279,22 +288,25 @@ def process_dataset(
             pbar.update(len(target_languages))
             continue
 
-        # ── Build base record ───────────────────────────────────────────
+        # ── Build record ────────────────────────────────────────────────
+        row_id = row.get(config["id_col"], idx)
         row_record = {
-            "index": row.get("index", idx),
+            "index": row_id,
             "source_text_en": source_text,
         }
+        if config["speaker_col"] and config["speaker_col"] in ds.column_names:
+            row_record["speaker_id"] = row.get(config["speaker_col"], "")
 
-        # Copy all existing text translations
-        for lang_code, col_name in ACL_TEXT_COLUMNS.items():
+        # Copy existing text columns
+        for lang_code, col_name in available_langs.items():
             if col_name in ds.column_names:
                 row_record[f"text_{lang_code}"] = row.get(col_name, "")
 
-        # ── Generate cloned speech for each target language ─────────────
+        # ── Generate cloned speech per target language ──────────────────
         for target_lang in target_languages:
             lang_audio_dir = ensure_dir(os.path.join(audio_dir, target_lang))
 
-            text_col = ACL_TEXT_COLUMNS.get(target_lang)
+            text_col = available_langs.get(target_lang)
             target_text = row.get(text_col, "") if text_col else ""
 
             if not target_text:
@@ -307,7 +319,6 @@ def process_dataset(
             filepath = os.path.join(lang_audio_dir, filename)
 
             try:
-                # Generate cloned speech
                 generated_text = generate_cloned_speech(
                     model=model,
                     tokenizer=tokenizer,
@@ -318,7 +329,6 @@ def process_dataset(
                     temperature=temperature,
                 )
 
-                # Decode audio tokens to waveform
                 audio_waveform = decode_audio_tokens(generated_text, codec, device)
 
                 if audio_waveform is not None and len(audio_waveform) > 0:
@@ -354,7 +364,7 @@ def process_dataset(
         # Summary
         print("\n── Voice Cloning Summary ──")
         print(f"  Model:           {MODEL_NAME}")
-        print(f"  Source dataset:   {DATASET_NAME} ({split})")
+        print(f"  Source dataset:   {dataset_name} ({use_split})")
         print(f"  Total rows:      {len(records)}")
         print(f"  Target languages: {target_languages}")
         for lang in target_languages:
@@ -371,27 +381,33 @@ def process_dataset(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Clone voices from ACL 60/60 using Scicom Multilingual-TTS-1.7B-Base.",
+        description="Clone voices from ACL datasets using Scicom Multilingual-TTS-1.7B-Base.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-This model supports 150+ languages including Arabic.
-It performs TRUE voice cloning: the source speaker's voice is preserved
-in the generated target-language speech.
+Supported datasets:
+  amanuelbyte/acl6060-voice-cloning  (default, 40 rows, langs: en, ar, fr)
+  ymoslem/acl-6060                   (468 rows, langs: en, ar, de, fa, fr, ja, nl, pt, ru, tr, zh)
 
-ACL 60/60 text columns: en, ar, de, fa, fr, ja, nl, pt, ru, tr, zh
+This model supports 150+ languages including Arabic.
+It performs TRUE voice cloning: the source speaker's voice is preserved.
         """,
+    )
+    parser.add_argument(
+        "--dataset", type=str, default="amanuelbyte/acl6060-voice-cloning",
+        choices=list(DATASET_CONFIGS.keys()),
+        help="Source dataset to use.",
     )
     parser.add_argument(
         "--output_dir", type=str, default="./output/acl6060_scicom",
         help="Directory to save output files.",
     )
     parser.add_argument(
-        "--target_languages", type=str, default="fr,zh,ar",
+        "--target_languages", type=str, default="fr,ar",
         help="Comma-separated target language codes.",
     )
     parser.add_argument(
-        "--split", type=str, default="dev",
-        help="Dataset split (dev or test).",
+        "--split", type=str, default=None,
+        help="Dataset split (auto-detected if not provided).",
     )
     parser.add_argument(
         "--max_rows", type=int, default=None,
@@ -416,21 +432,23 @@ def main():
     args = parse_args()
     target_languages = [l.strip() for l in args.target_languages.split(",")]
 
-    # Validate languages exist in ACL dataset
-    for lang in target_languages:
-        if lang not in ACL_TEXT_COLUMNS:
-            print(
-                f"Error: Language '{lang}' not in ACL 60/60 dataset. "
-                f"Available: {list(ACL_TEXT_COLUMNS.keys())}"
-            )
-            sys.exit(1)
+    config = DATASET_CONFIGS[args.dataset]
+    available = list(config["text_columns"].keys())
+
+    invalid = [l for l in target_languages if l not in config["text_columns"]]
+    if invalid:
+        print(
+            f"Error: Languages {invalid} not available in {args.dataset}. "
+            f"Available: {available}"
+        )
+        sys.exit(1)
 
     print("=" * 60)
-    print("  ACL 60/60 Voice Cloning (Scicom Multilingual-TTS)")
+    print("  ACL Voice Cloning (Scicom Multilingual-TTS)")
     print("=" * 60)
     print(f"  Model:            {MODEL_NAME}")
-    print(f"  Dataset:          {DATASET_NAME}")
-    print(f"  Split:            {args.split}")
+    print(f"  Dataset:          {args.dataset}")
+    print(f"  Split:            {args.split or config['default_split']}")
     print(f"  Target languages: {target_languages}")
     print(f"  Max rows:         {args.max_rows or 'all'}")
     print(f"  Output dir:       {args.output_dir}")
@@ -439,6 +457,7 @@ def main():
     print("=" * 60)
 
     process_dataset(
+        dataset_name=args.dataset,
         output_dir=args.output_dir,
         target_languages=target_languages,
         split=args.split,

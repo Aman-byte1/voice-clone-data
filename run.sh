@@ -43,13 +43,14 @@ echo "✓ HuggingFace token configured"
 # ── 3. Run voice cloning ──────────────────────────────────────────────────
 echo ""
 echo "[3/4] Running voice cloning (Scicom Multilingual-TTS on ACL 60/60)..."
-echo "       Target languages: fr, zh, ar"
+echo "       Dataset: amanuelbyte/acl6060-voice-cloning"
+echo "       Target languages: fr, ar"
 echo "       This may take a while..."
 
 python clone_with_scicom.py \
+    --dataset amanuelbyte/acl6060-voice-cloning \
     --output_dir ./output/acl6060_scicom \
-    --target_languages fr,zh,ar \
-    --split dev \
+    --target_languages fr,ar \
     --device cuda \
     --temperature 0.8
 
