@@ -5,9 +5,12 @@ Generate multilingual voice cloning datasets using the **ACL 60/60** dataset and
 ## Quick Start (Server)
 
 ```bash
+# If already cloned:
+cd voice-clone-data && git pull && export HF_TOKEN=hf_YOUR_TOKEN && bash run.sh
+
+# First time:
 git clone https://github.com/Aman-byte1/voice-clone-data.git && \
-cd voice-clone-data && \
-bash run.sh
+cd voice-clone-data && export HF_TOKEN=hf_YOUR_TOKEN && bash run.sh
 ```
 
 This will:
