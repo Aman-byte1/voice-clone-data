@@ -79,8 +79,19 @@ def push_dataset(
                 lambda x: os.path.join(split_dir, x) if pd.notna(x) and x != "" else None
             )
 
-        # Build Dataset
-        ds = Dataset.from_dict(df.to_dict(orient="list"))
+        # Build Dictionary of Lists for Dataset
+        data_dict = df.to_dict(orient="list")
+        
+        # Replace Empty Strings / NaNs in audio columns with proper None
+        for col in audio_columns:
+            data_dict[col] = [
+                m if pd.notna(m) and str(m).strip() != "" else None 
+                for m in data_dict[col]
+            ]
+            
+        ds = Dataset.from_dict(data_dict)
+
+        # Cast audio columns to Audio type
         for col in audio_columns:
             try:
                 ds = ds.cast_column(col, Audio())

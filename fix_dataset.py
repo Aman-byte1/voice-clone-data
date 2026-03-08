@@ -46,16 +46,18 @@ def fix_split(split, output_dir):
         final_record = {}
         
         # 1. En text and En audio
-        final_record["text_en"] = row_dict.get("source_text_en", row_dict.get("text_en", ""))
+        final_record["text_en"] = str(row_dict.get("source_text_en", row_dict.get("text_en", "")))
         final_record["voice_en"] = en_wav_path
         
         # 2. Ar text and Ar audio
-        final_record["text_ar"] = row_dict.get("text_ar", "")
-        final_record["voice_ar"] = row_dict.get("cloned_voice_ar", row_dict.get("voice_ar", ""))
+        final_record["text_ar"] = str(row_dict.get("text_ar", ""))
+        ar_audio = row_dict.get("cloned_voice_ar", row_dict.get("voice_ar"))
+        final_record["voice_ar"] = str(ar_audio) if pd.notna(ar_audio) else ""
         
         # 3. Fr text and Fr audio
-        final_record["text_fr"] = row_dict.get("text_fr", "")
-        final_record["voice_fr"] = row_dict.get("cloned_voice_fr", row_dict.get("voice_fr", ""))
+        final_record["text_fr"] = str(row_dict.get("text_fr", ""))
+        fr_audio = row_dict.get("cloned_voice_fr", row_dict.get("voice_fr"))
+        final_record["voice_fr"] = str(fr_audio) if pd.notna(fr_audio) else ""
         
         # 4. Remaining columns
         for k, v in row_dict.items():
