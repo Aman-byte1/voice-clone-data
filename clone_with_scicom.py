@@ -264,6 +264,14 @@ def process_split(
         sr = audio_data["sampling_rate"]
         source_text = row.get(config["source_text_col"], "")
 
+        # Get the original english audio path if it exists
+        original_audio_path = row.get("reference_audio_path", "")
+        # Fallback to saving the array as wav if "reference_audio_path" is missing
+        if not original_audio_path:
+            en_audio_dir = ensure_dir(os.path.join(audio_dir, "en"))
+            original_audio_path = os.path.join(en_audio_dir, f"original_{idx:05d}.wav")
+            sf.write(original_audio_path, audio_array, sr)
+
         try:
             ref_tokens = encode_reference_audio(audio_array, sr, codec, device)
         except Exception as e:
@@ -271,17 +279,21 @@ def process_split(
             pbar.update(len(target_languages))
             continue
 
+        # ── Start building structured record ──
         row_id = row.get(config["id_col"], idx)
-        row_record = {
+        temp_record = {
             "index": row_id,
-            "source_text_en": source_text,
+            "speaker_id": row.get(config["speaker_col"], "") if config["speaker_col"] else "",
         }
-        if config["speaker_col"] and config["speaker_col"] in ds.column_names:
-            row_record["speaker_id"] = row.get(config["speaker_col"], "")
 
+        # Keep original text columns
         for lang_code, col_name in available_langs.items():
             if col_name in ds.column_names:
-                row_record[f"text_{lang_code}"] = row.get(col_name, "")
+                temp_record[f"text_{lang_code}"] = row.get(col_name, "")
+        temp_record["text_en"] = source_text # Ensure fallback mapping
+
+        # Ensure en audio exists in the dataset output
+        temp_record["cloned_voice_en"] = original_audio_path
 
         for target_lang in target_languages:
             lang_audio_dir = ensure_dir(os.path.join(audio_dir, target_lang))
@@ -289,7 +301,7 @@ def process_split(
             target_text = row.get(text_col, "") if text_col else ""
 
             if not target_text:
-                row_record[f"cloned_voice_{target_lang}"] = ""
+                temp_record[f"cloned_voice_{target_lang}"] = ""
                 pbar.update(1)
                 continue
 
@@ -306,15 +318,36 @@ def process_split(
                 audio_waveform = decode_audio_tokens(generated_text, codec, device)
                 if audio_waveform is not None and len(audio_waveform) > 0:
                     sf.write(filepath, audio_waveform, OUTPUT_SAMPLE_RATE)
-                    row_record[f"cloned_voice_{target_lang}"] = os.path.relpath(filepath, split_dir)
+                    temp_record[f"cloned_voice_{target_lang}"] = os.path.relpath(filepath, split_dir)
                 else:
-                    row_record[f"cloned_voice_{target_lang}"] = ""
+                    temp_record[f"cloned_voice_{target_lang}"] = ""
             except Exception as e:
                 print(f"\n  ✗ Row {idx} -> {target_lang}: {e}")
-                row_record[f"cloned_voice_{target_lang}"] = ""
+                temp_record[f"cloned_voice_{target_lang}"] = ""
 
             pbar.update(1)
-        records.append(row_record)
+
+        # Build final record with specific column order
+        final_record = {}
+        
+        # 1. En text and En audio
+        final_record["text_en"] = temp_record.get("text_en", "")
+        final_record["cloned_voice_en"] = temp_record.get("cloned_voice_en", "")
+        
+        # 2. Ar text and Ar audio (if available)
+        final_record["text_ar"] = temp_record.get("text_ar", "")
+        final_record["cloned_voice_ar"] = temp_record.get("cloned_voice_ar", "")
+        
+        # 3. Fr text and Fr audio (if available)
+        final_record["text_fr"] = temp_record.get("text_fr", "")
+        final_record["cloned_voice_fr"] = temp_record.get("cloned_voice_fr", "")
+
+        # 4. Remaining columns
+        for k, v in row.items():
+            if k not in ["reference_audio_path", "audio", "target_text_en", "target_text_ar", "target_text_fr", "reference_text_en", "text_en", "text_ar", "text_fr"]:
+                final_record[k] = v
+
+        records.append(final_record)
     pbar.close()
 
     if records:
