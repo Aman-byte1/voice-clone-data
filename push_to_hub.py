@@ -45,22 +45,24 @@ def push_dataset(
     found_splits = []
     
     # Also check if the output_dir itself has a metadata.csv (single split legacy mode)
-    possible_csvs = ["metadata_cloned.csv", "metadata_enhanced.csv", "metadata.csv"]
-    for csv in possible_csvs:
-        if os.path.exists(os.path.join(output_dir, csv)):
-            found_splits.append(("train", output_dir, os.path.join(output_dir, csv)))
-            break
-            
-    # If no root metadata, look in subdirectories for actual splits
+    possible_csvs = ["metadata_cloned.csv", "metadata_enhanced.csv", "metadata_fr_test.csv", "metadata.csv"]
+
+    # First, look in subdirectories for actual splits (e.g. train/, test/)
+    for item in sorted(os.listdir(output_dir)):
+        split_dir = os.path.join(output_dir, item)
+        if os.path.isdir(split_dir):
+            for csv in possible_csvs:
+                csv_path = os.path.join(split_dir, csv)
+                if os.path.exists(csv_path):
+                    found_splits.append((item, split_dir, csv_path))
+                    break
+
+    # If no subdirectory splits, check if the root has a metadata CSV
     if not found_splits:
-        for item in os.listdir(output_dir):
-            split_dir = os.path.join(output_dir, item)
-            if os.path.isdir(split_dir):
-                for csv in possible_csvs:
-                    csv_path = os.path.join(split_dir, csv)
-                    if os.path.exists(csv_path):
-                        found_splits.append((item, split_dir, csv_path))
-                        break
+        for csv in possible_csvs:
+            if os.path.exists(os.path.join(output_dir, csv)):
+                found_splits.append(("train", output_dir, os.path.join(output_dir, csv)))
+                break
 
     if not found_splits:
         print(f"Error: No valid data splits found in {output_dir}")
@@ -75,7 +77,7 @@ def push_dataset(
         from datasets import Features, Value, Audio
 
         # Resolve audio paths to absolute paths
-        audio_columns = [c for c in df.columns if c.startswith("voice_")]
+        audio_columns = [c for c in df.columns if c.startswith("voice_") or c.startswith("cloned_voice_")]
         data_dict = df.to_dict(orient="list")
         
         # Replace Empty Strings / NaNs in audio columns with proper None
