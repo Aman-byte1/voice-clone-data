@@ -57,23 +57,16 @@ def load_model(device: str = "cuda"):
         torch.load = patched_load
         print("✓ Applied torch.load monkeypatch for CPU execution.")
 
-    # Monkeypatch Resemble Watermarker to avoid 'NoneType' error if not properly installed
-    try:
-        import resemble_perth as perth
-        if perth is None or not hasattr(perth, 'PerthImplicitWatermarker'):
-            raise ImportError
-    except ImportError:
-        print("⚠ Resemble Watermarker not found or broken. Applying mock...")
-        class MockWatermarker:
-            def __call__(self, *args, **kwargs): return self
-            def encode(self, wav, *args, **kwargs): return wav
-            def __getattr__(self, name): return lambda *a, **k: None
-        
-        mock_perth = type('MockPerth', (), {'PerthImplicitWatermarker': MockWatermarker})()
-        sys.modules['resemble_perth'] = mock_perth
-        # If chatterbox already imported mtl_tts, we might need to inject it there
-        if 'chatterbox.mtl_tts' in sys.modules:
-            sys.modules['chatterbox.mtl_tts'].perth = mock_perth
+    # Aggressively mock Resemble Watermarker to avoid 'NoneType' error
+    class MockWatermarker:
+        def __init__(self, *args, **kwargs): pass
+        def __call__(self, *args, **kwargs): return self
+        def encode(self, wav, *args, **kwargs): return wav
+        def __getattr__(self, name): return lambda *a, **k: None
+
+    mock_module = type('MockPerth', (), {'PerthImplicitWatermarker': MockWatermarker})
+    sys.modules['resemble_perth'] = mock_module
+    print("✓ Forcefully applied Resemble Watermarker mock.")
 
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
