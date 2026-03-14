@@ -46,6 +46,17 @@ def load_model(device: str = "cuda"):
         print("⚠ CUDA requested but not available. Falling back to CPU.")
         device = "cpu"
 
+    # Monkeypatch torch.load to handle CPU-only environments for Chatterbox checkpoints
+    if device == "cpu":
+        import torch
+        original_load = torch.load
+        def patched_load(*args, **kwargs):
+            if 'map_location' not in kwargs:
+                kwargs['map_location'] = 'cpu'
+            return original_load(*args, **kwargs)
+        torch.load = patched_load
+        print("✓ Applied torch.load monkeypatch for CPU execution.")
+
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
     print(f"Loading Chatterbox Multilingual TTS model...")
