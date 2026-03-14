@@ -15,7 +15,16 @@
 set -e
 
 # ── Auto-detect Python binary ─────────────────────────────────────────────
-if command -v python3 &> /dev/null; then
+# Prefer specific versioned python (e.g. python3.13) over generic python3
+if command -v python3.13 &> /dev/null; then
+    PY=python3.13
+elif command -v python3.12 &> /dev/null; then
+    PY=python3.12
+elif command -v python3.11 &> /dev/null; then
+    PY=python3.11
+elif command -v python3.10 &> /dev/null; then
+    PY=python3.10
+elif command -v python3 &> /dev/null; then
     PY=python3
 elif command -v python &> /dev/null; then
     PY=python
