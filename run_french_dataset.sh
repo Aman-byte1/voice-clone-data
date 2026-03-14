@@ -43,7 +43,7 @@ echo ""
 echo "[1/4] Installing dependencies..."
 $PY -m pip install six python-dateutil --force-reinstall
 $PY -m pip install -r requirements.txt
-$PY -m pip install pandas huggingface_hub soundfile tqdm datasets
+$PY -m pip install chatterbox-tts pandas huggingface_hub soundfile tqdm datasets torchaudio
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""

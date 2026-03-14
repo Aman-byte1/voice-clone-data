@@ -5,6 +5,7 @@ pandas
 huggingface_hub
 tqdm
 torch
+torchaudio
 librosa
 
 # For MagpieTTS (generate_synthetic_dataset.py, clone_acl6060_voices.py)
@@ -14,3 +15,6 @@ kaldialign
 # For Scicom Multilingual-TTS (clone_with_scicom.py)
 transformers
 neucodec
+
+# For Chatterbox TTS (generate_french_dataset.py)
+chatterbox-tts
