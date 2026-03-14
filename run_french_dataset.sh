@@ -42,8 +42,10 @@ echo "============================================"
 echo ""
 echo "[1/4] Installing dependencies..."
 $PY -m pip install six python-dateutil --force-reinstall
-# Only install what generate_french_dataset.py + push_to_hub.py need
-$PY -m pip install chatterbox-tts torchaudio pandas huggingface_hub soundfile tqdm datasets
+# Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
+$PY -m pip install chatterbox-tts --no-deps
+# Install actual runtime deps separately (uses system-compatible numpy)
+$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets transformers safetensors tokenizers conformer resemble-perth
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
