@@ -57,18 +57,22 @@ def load_model(device: str = "cuda"):
         torch.load = patched_load
         print("✓ Applied torch.load monkeypatch for CPU execution.")
 
-    # Aggressively mock Resemble Watermarker to avoid 'NoneType' error
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    import chatterbox.mtl_tts as mtl_tts
+
+    # Aggressively mock Resemble Watermarker AFTER importing chatterbox
+    # The real resemble_perth sets its class to None if CUDA isn't available
     class MockWatermarker:
         def __init__(self, *args, **kwargs): pass
         def __call__(self, *args, **kwargs): return self
         def encode(self, wav, *args, **kwargs): return wav
         def __getattr__(self, name): return lambda *a, **k: None
 
-    mock_module = type('MockPerth', (), {'PerthImplicitWatermarker': MockWatermarker})
-    sys.modules['resemble_perth'] = mock_module
-    print("✓ Forcefully applied Resemble Watermarker mock.")
+    class MockPerth:
+        PerthImplicitWatermarker = MockWatermarker
 
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
+    mtl_tts.perth = MockPerth()
+    print("✓ Forcefully applied Resemble Watermarker mock on mtl_tts.perth.")
 
     print(f"Loading Chatterbox Multilingual TTS model...")
     _model = ChatterboxMultilingualTTS.from_pretrained(device=device)
