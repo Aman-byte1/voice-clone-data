@@ -22,6 +22,7 @@ echo "============================================"
 echo ""
 echo "[1/4] Installing dependencies..."
 pip install -r requirements.txt
+pip install pandas huggingface_hub[cli] soundfile tqdm datasets
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
