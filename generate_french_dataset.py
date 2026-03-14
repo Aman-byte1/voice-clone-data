@@ -116,6 +116,7 @@ def generate_split(ds, split_name, output_dir, model, device):
     """Generate French cloned audio for a single split using Chatterbox voice cloning."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
+    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
 
     target_lang = "fr"
     records = []
@@ -128,8 +129,8 @@ def generate_split(ds, split_name, output_dir, model, device):
             "speaker": str(row.get("index", f"speaker_{idx}")),
             "text_en": row.get("text_en", ""),
             "fr_text": row.get("text_fr", ""),
-            "audio_en": "",
-            "cloned_audio_fr": "",
+            "auido_en": "",
+            "cloned_auido_fr": "",
         }
 
         # Get source audio for voice cloning
@@ -161,7 +162,7 @@ def generate_split(ds, split_name, output_dir, model, device):
         try:
             # Write reference audio permanently
             sf.write(audio_en_filepath, audio_array, sr)
-            row_record["audio_en"] = os.path.relpath(audio_en_filepath, split_dir)
+            row_record["auido_en"] = os.path.relpath(audio_en_filepath, split_dir)
             
             # Write reference audio to a temp file for model specific format needs
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -177,7 +178,7 @@ def generate_split(ds, split_name, output_dir, model, device):
 
             # Save output
             ta.save(filepath, wav, model.sr)
-            row_record["cloned_audio_fr"] = os.path.relpath(filepath, split_dir)
+            row_record["cloned_auido_fr"] = os.path.relpath(filepath, split_dir)
 
         except Exception as e:
             print(f"\n  ✗ Failed row {idx} -> fr: {e}")
@@ -202,7 +203,7 @@ def generate_split(ds, split_name, output_dir, model, device):
         df.to_json(json_path, orient="records", force_ascii=False, indent=2)
         print(f"  ✓ Saved JSON to {json_path}")
 
-        filled = df["cloned_audio_fr"].astype(bool).sum()
+        filled = df["cloned_auido_fr"].astype(bool).sum()
         print(f"  ✓ Successful clones: {filled}/{len(records)}")
     else:
         print(f"  ⚠ No records for {split_name}")
