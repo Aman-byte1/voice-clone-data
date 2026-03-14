@@ -47,7 +47,7 @@ $PY -m pip install chatterbox-tts --no-deps
 # Install actual runtime deps separately (uses system-compatible versions)
 $PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets \
     transformers safetensors tokenizers conformer resemble-perth \
-    s3tokenizer diffusers pykakasi spacy-pkuseg
+    s3tokenizer diffusers pykakasi spacy-pkuseg gradio
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
