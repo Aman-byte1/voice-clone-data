@@ -44,8 +44,10 @@ echo "[1/4] Installing dependencies..."
 $PY -m pip install six python-dateutil --force-reinstall
 # Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
 $PY -m pip install chatterbox-tts --no-deps
-# Install actual runtime deps separately (uses system-compatible numpy)
-$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets transformers safetensors tokenizers conformer resemble-perth
+# Install actual runtime deps separately (uses system-compatible versions)
+$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets \
+    transformers safetensors tokenizers conformer resemble-perth \
+    s3tokenizer diffusers pykakasi spacy-pkuseg
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
