@@ -41,8 +41,9 @@ echo "============================================"
 # ── 1. Install dependencies ────────────────────────────────────────────────
 echo ""
 echo "[1/4] Installing dependencies..."
+$PY -m pip install six python-dateutil --force-reinstall
 $PY -m pip install -r requirements.txt
-$PY -m pip install pandas huggingface_hub[cli] soundfile tqdm datasets
+$PY -m pip install pandas huggingface_hub soundfile tqdm datasets
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
@@ -54,7 +55,7 @@ if [ -z "$HF_TOKEN" ]; then
     exit 1
 fi
 export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-$PY -m huggingface_hub.commands.huggingface_cli login --token "$HF_TOKEN" || true
+$PY -c "from huggingface_hub import login; login(token='$HF_TOKEN')" || true
 echo "✓ HuggingFace token configured"
 
 # ── 3. Generate train + test splits ──────────────────────────────────────
