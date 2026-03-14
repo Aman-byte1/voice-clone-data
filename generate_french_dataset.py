@@ -115,7 +115,7 @@ def load_and_split_dataset():
 def generate_split(ds, split_name, output_dir, model, device):
     """Generate French cloned audio for a single split using Chatterbox voice cloning."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
-    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
+    audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
 
     target_lang = "fr"
     records = []
@@ -125,18 +125,17 @@ def generate_split(ds, split_name, output_dir, model, device):
         row = ds[idx]
 
         row_record = {
-            "selected_id": idx,
-            "original_index": row.get("index", ""),
-            "source_text_en": row.get("text_en", ""),
-            "text_fr": row.get("text_fr", ""),
-            "tts_model": TTS_MODEL_NAME,
+            "speaker": str(row.get("index", f"speaker_{idx}")),
+            "text_en": row.get("text_en", ""),
+            "fr_text": row.get("text_fr", ""),
+            "audio_en": "",
+            "cloned_audio_fr": "",
         }
 
         # Get source audio for voice cloning
         audio_val = row.get("audio")
         if audio_val is None or not isinstance(audio_val, dict):
             print(f"\n  ⚠ Row {idx}: no source audio, skipping.")
-            row_record["cloned_voice_fr"] = ""
             records.append(row_record)
             pbar.update(1)
             continue
@@ -144,20 +143,27 @@ def generate_split(ds, split_name, output_dir, model, device):
         translated_text = row.get("text_fr", "")
         if not translated_text:
             print(f"\n  ⚠ Row {idx}: no French text, skipping.")
-            row_record["cloned_voice_fr"] = ""
             records.append(row_record)
             pbar.update(1)
             continue
 
         # Save source audio to a temp file for Chatterbox voice cloning prompt
+        # Also save it permanently to our audio_en directory
         audio_array = np.array(audio_val["array"], dtype=np.float32)
         sr = audio_val["sampling_rate"]
 
+        audio_en_filename = f"original_{idx:05d}_en.wav"
+        audio_en_filepath = os.path.join(audio_en_dir, audio_en_filename)
+        
         filename = f"cloned_{idx:05d}_fr.wav"
         filepath = os.path.join(audio_dir, filename)
 
         try:
-            # Write reference audio to a temp file
+            # Write reference audio permanently
+            sf.write(audio_en_filepath, audio_array, sr)
+            row_record["audio_en"] = os.path.relpath(audio_en_filepath, split_dir)
+            
+            # Write reference audio to a temp file for model specific format needs
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 tmp_path = tmp.name
                 sf.write(tmp_path, audio_array, sr)
@@ -171,11 +177,10 @@ def generate_split(ds, split_name, output_dir, model, device):
 
             # Save output
             ta.save(filepath, wav, model.sr)
-            row_record["cloned_voice_fr"] = os.path.relpath(filepath, split_dir)
+            row_record["cloned_audio_fr"] = os.path.relpath(filepath, split_dir)
 
         except Exception as e:
             print(f"\n  ✗ Failed row {idx} -> fr: {e}")
-            row_record["cloned_voice_fr"] = ""
         finally:
             # Clean up temp file
             if "tmp_path" in locals() and os.path.exists(tmp_path):
@@ -197,7 +202,7 @@ def generate_split(ds, split_name, output_dir, model, device):
         df.to_json(json_path, orient="records", force_ascii=False, indent=2)
         print(f"  ✓ Saved JSON to {json_path}")
 
-        filled = df["cloned_voice_fr"].astype(bool).sum()
+        filled = df["cloned_audio_fr"].astype(bool).sum()
         print(f"  ✓ Successful clones: {filled}/{len(records)}")
     else:
         print(f"  ⚠ No records for {split_name}")

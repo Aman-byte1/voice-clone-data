@@ -77,7 +77,7 @@ def push_dataset(
         from datasets import Features, Value, Audio
 
         # Resolve audio paths to absolute paths
-        audio_columns = [c for c in df.columns if c.startswith("voice_") or c.startswith("cloned_voice_")]
+        audio_columns = [c for c in df.columns if "audio" in c.lower() or "voice" in c.lower()]
         data_dict = df.to_dict(orient="list")
         
         # Replace Empty Strings / NaNs in audio columns with proper None
