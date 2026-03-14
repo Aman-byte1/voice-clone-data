@@ -14,6 +14,17 @@
 
 set -e
 
+# ── Auto-detect Python binary ─────────────────────────────────────────────
+if command -v python3 &> /dev/null; then
+    PY=python3
+elif command -v python &> /dev/null; then
+    PY=python
+else
+    echo "ERROR: No python found on PATH"
+    exit 1
+fi
+echo "Using Python: $PY ($($PY --version))"
+
 echo "============================================"
 echo "  French Voice Cloning — Full Pipeline"
 echo "============================================"
@@ -21,8 +32,8 @@ echo "============================================"
 # ── 1. Install dependencies ────────────────────────────────────────────────
 echo ""
 echo "[1/4] Installing dependencies..."
-pip install -r requirements.txt
-pip install pandas huggingface_hub[cli] soundfile tqdm datasets
+$PY -m pip install -r requirements.txt
+$PY -m pip install pandas huggingface_hub[cli] soundfile tqdm datasets
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
@@ -34,7 +45,7 @@ if [ -z "$HF_TOKEN" ]; then
     exit 1
 fi
 export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-huggingface-cli login --token "$HF_TOKEN" || true
+$PY -m huggingface_hub.commands.huggingface_cli login --token "$HF_TOKEN" || true
 echo "✓ HuggingFace token configured"
 
 # ── 3. Generate train + test splits ──────────────────────────────────────
@@ -42,7 +53,7 @@ echo ""
 echo "[3/4] Generating French dataset (train + test)..."
 echo "       TTS Model: nvidia/magpie_tts_multilingual_357m"
 echo "       Test: 100 samples, Train: 784 samples"
-python generate_french_dataset.py \
+$PY generate_french_dataset.py \
     --output_dir ./output/acl6060_fr \
     --device cuda
 
@@ -51,7 +62,7 @@ echo "✓ Generation complete"
 # ── 4. Push to HuggingFace ──────────────────────────────────────────────
 echo ""
 echo "[4/4] Pushing dataset to HuggingFace..."
-python push_to_hub.py \
+$PY push_to_hub.py \
     --output_dir ./output/acl6060_fr \
     --repo_name amanuelbyte/acl6060-voice-cloning-fr
 
