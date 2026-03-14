@@ -134,9 +134,21 @@ def generate_split(ds, split_name, output_dir, model, device):
         }
 
         # Get source audio for voice cloning
+        # Trying both 'audio' (standard) and checking keys
         audio_val = row.get("audio")
+        
+        if idx == 0:
+            print(f"\n[DEBUG] Row 0 Keys: {list(row.keys())}")
+            print(f"[DEBUG] Row 0 'audio' type: {type(audio_val)}")
+            if isinstance(audio_val, dict):
+                print(f"[DEBUG] Row 0 'audio' keys: {list(audio_val.keys())}")
+
         if audio_val is None or not isinstance(audio_val, dict):
-            print(f"\n  ⚠ Row {idx}: no source audio, skipping.")
+            # Fallback check if it's named differently or not a dict
+            if audio_val is not None:
+                print(f"\n  ⚠ Row {idx}: source audio is {type(audio_val)}, expected dict. Skipping.")
+            else:
+                print(f"\n  ⚠ Row {idx}: no 'audio' key found in row. Skipping.")
             records.append(row_record)
             pbar.update(1)
             continue
