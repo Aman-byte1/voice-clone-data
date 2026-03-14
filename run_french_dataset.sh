@@ -6,7 +6,7 @@
 #   - Merges both splits (884 total)
 #   - Shuffles with seed 0
 #   - Test: 100 samples, Train: 784 samples
-#   - TTS model: nvidia/magpie_tts_multilingual_357m (MagpieTTS)
+#   - TTS model: resemble-ai/chatterbox (Chatterbox AI)
 #
 # Usage (on server):
 #   bash run_french_dataset.sh
@@ -65,11 +65,21 @@ echo "✓ HuggingFace token configured"
 # ── 3. Generate train + test splits ──────────────────────────────────────
 echo ""
 echo "[3/4] Generating French dataset (train + test)..."
-echo "       TTS Model: nvidia/magpie_tts_multilingual_357m"
+echo "       TTS Model: resemble-ai/chatterbox-multilingual"
 echo "       Test: 100 samples, Train: 784 samples"
+
+# Auto-detect device
+DEVICE="cuda"
+if ! $PY -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    echo "⚠ CUDA not available or NVIDIA drivers missing. Falling back to CPU."
+    DEVICE="cpu"
+else
+    echo "✓ CUDA detected. Using GPU acceleration."
+fi
+
 $PY generate_french_dataset.py \
     --output_dir ./output/acl6060_fr \
-    --device cuda
+    --device "$DEVICE"
 
 echo "✓ Generation complete"
 

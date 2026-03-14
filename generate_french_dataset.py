@@ -41,6 +41,11 @@ def load_model(device: str = "cuda"):
     if _model is not None:
         return _model
 
+    # Auto-fallback if cuda requested but not available
+    if device == "cuda" and not torch.cuda.is_available():
+        print("⚠ CUDA requested but not available. Falling back to CPU.")
+        device = "cpu"
+
     from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
     print(f"Loading Chatterbox Multilingual TTS model...")
