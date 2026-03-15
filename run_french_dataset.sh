@@ -66,7 +66,11 @@ echo "✓ HuggingFace token configured"
 echo ""
 echo "[3/4] Generating French dataset (train + test)..."
 echo "       TTS Model: resemble-ai/chatterbox-multilingual"
-echo "       Test: 100 samples, Train: 784 samples"
+# Default sample counts (Full scale)
+NUM_TEST=${1:-100}
+NUM_TRAIN=${2:-784}
+
+echo "       Test: $NUM_TEST samples, Train: $NUM_TRAIN samples"
 
 # Auto-detect device
 DEVICE="cuda"
@@ -79,6 +83,8 @@ fi
 
 $PY generate_french_dataset.py \
     --output_dir ./output/acl6060_fr \
+    --num_test "$NUM_TEST" \
+    --num_train "$NUM_TRAIN" \
     --device "$DEVICE"
 
 echo "✓ Generation complete"

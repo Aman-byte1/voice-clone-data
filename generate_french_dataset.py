@@ -79,7 +79,7 @@ def ensure_dir(path):
     return path
 
 
-def load_and_split_dataset():
+def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
     """Load both splits, merge, shuffle with seed 0, split into train/test."""
     print(f"Loading {DATASET_NAME} dataset...")
     ds_dev = load_dataset(DATASET_NAME, split="dev")
@@ -92,8 +92,16 @@ def load_and_split_dataset():
     print(f"  Combined:     {len(ds_combined)} rows")
 
     ds_shuffled = ds_combined.shuffle(seed=RANDOM_SEED)
-    ds_test = ds_shuffled.select(range(NUM_TEST))
-    ds_train = ds_shuffled.select(range(NUM_TEST, len(ds_shuffled)))
+    
+    # Selection logic
+    ds_test = ds_shuffled.select(range(num_test))
+    
+    # If num_train is specified, select exactly that many after the test set
+    # Otherwise select everything else
+    if num_train is not None:
+        ds_train = ds_shuffled.select(range(num_test, num_test + num_train))
+    else:
+        ds_train = ds_shuffled.select(range(num_test, len(ds_shuffled)))
 
     print(f"  Test split:   {len(ds_test)} rows")
     print(f"  Train split:  {len(ds_train)} rows")
@@ -226,7 +234,21 @@ def parse_args():
         help="Root output directory.",
     )
     parser.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"],
+        "--num_test",
+        type=int,
+        default=NUM_TEST,
+        help=f"Number of samples for the test split (default: {NUM_TEST}).",
+    )
+    parser.add_argument(
+        "--num_train",
+        type=int,
+        default=None,
+        help="Number of samples for the train split (default: all remaining).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
         help="Device for inference.",
     )
     return parser.parse_args()
@@ -242,12 +264,13 @@ def main():
     print(f"  TTS model:       {TTS_MODEL_NAME}")
     print(f"  Target language: fr (French)")
     print(f"  Random seed:     {RANDOM_SEED}")
-    print(f"  Test samples:    {NUM_TEST}")
+    print(f"  Test samples:    {args.num_test}")
+    print(f"  Train samples:   {args.num_train or 'all remaining'}")
     print(f"  Output dir:      {args.output_dir}")
     print(f"  Device:          {args.device}")
     print("=" * 60)
 
-    ds_train, ds_test = load_and_split_dataset()
+    ds_train, ds_test = load_and_split_dataset(num_train=args.num_train, num_test=args.num_test)
     model = load_model(device=args.device)
 
     print("\n── Generating TEST split ──")
