@@ -40,7 +40,12 @@ echo "============================================"
 
 # ── 1. Install dependencies ────────────────────────────────────────────────
 echo ""
-echo "[1/4] Installing dependencies..."
+echo "[1/4] Installing system dependencies (ffmpeg)..."
+if command -v apt-get &> /dev/null; then
+    apt-get update && apt-get install -y ffmpeg libavutil-dev libavcodec-dev libavformat-dev
+fi
+
+echo "[1/4] Installing python dependencies..."
 $PY -m pip install six python-dateutil --force-reinstall
 # Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
 $PY -m pip install chatterbox-tts --no-deps
