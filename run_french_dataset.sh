@@ -53,8 +53,9 @@ $PY -m pip install six python-dateutil --force-reinstall
 $PY -m pip install chatterbox-tts --no-deps
 # Install actual runtime deps separately (uses system-compatible versions)
 # NOTE: Pinning datasets < 3.2.0 to avoid mandatory torchcodec dependency
+# NOTE: Pinning transformers==4.46.3 as strictly required by chatterbox-tts 0.1.6
 $PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm "datasets<3.2.0" \
-    transformers safetensors tokenizers conformer resemble-perth \
+    "transformers==4.46.3" safetensors tokenizers conformer resemble-perth \
     s3tokenizer diffusers pykakasi spacy-pkuseg gradio librosa \
     soundfile omegaconf pyloudnorm
 
