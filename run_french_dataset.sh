@@ -48,16 +48,15 @@ if command -v apt-get &> /dev/null; then
 fi
 
 echo "[1/4] Installing python dependencies..."
-$PY -m pip uninstall -y torchcodec || true
 $PY -m pip install six python-dateutil --force-reinstall
 # Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
 $PY -m pip install chatterbox-tts --no-deps
 # Install actual runtime deps separately (uses system-compatible versions)
-# NOTE: torchcodec is excluded to avoid version conflicts; datasets will fallback.
-$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets \
+# NOTE: Pinning datasets < 3.2.0 to avoid mandatory torchcodec dependency
+$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm "datasets<3.2.0" \
     transformers safetensors tokenizers conformer resemble-perth \
     s3tokenizer diffusers pykakasi spacy-pkuseg gradio librosa \
-    omegaconf pyloudnorm
+    soundfile omegaconf pyloudnorm
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
 echo ""
