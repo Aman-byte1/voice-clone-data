@@ -63,14 +63,13 @@ $PY -c "from huggingface_hub import login; login(token='$HF_TOKEN')" || true
 echo "✓ HuggingFace token configured"
 
 # ── 3. Generate train + test splits ──────────────────────────────────────
-echo ""
-echo "[3/4] Generating French dataset (train + test)..."
-echo "       TTS Model: resemble-ai/chatterbox-multilingual"
 # Default sample counts (Full scale)
 NUM_TEST=${1:-100}
 NUM_TRAIN=${2:-784}
+NUM_WORKERS=${3:-4}
 
 echo "       Test: $NUM_TEST samples, Train: $NUM_TRAIN samples"
+echo "       Parallel workers: $NUM_WORKERS"
 
 # Auto-detect device
 DEVICE="cuda"
@@ -85,6 +84,7 @@ $PY generate_french_dataset.py \
     --output_dir ./output/acl6060_fr \
     --num_test "$NUM_TEST" \
     --num_train "$NUM_TRAIN" \
+    --num_workers "$NUM_WORKERS" \
     --device "$DEVICE"
 
 echo "✓ Generation complete"

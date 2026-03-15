@@ -15,6 +15,7 @@ import argparse
 import os
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 import pandas as pd
@@ -116,82 +117,67 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
 # ─── Generation ────────────────────────────────────────────────────────────────
 
 
-def generate_split(ds, split_name, output_dir, model, device):
-    """Generate French cloned audio for a single split using Chatterbox voice cloning."""
-    split_dir = ensure_dir(os.path.join(output_dir, split_name))
-    audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
-    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
+def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar):
+    """Process a single row for voice cloning."""
+    row_record = {
+        "speaker": str(row.get("index", f"speaker_{idx}")),
+        "text_en": row.get("text_en", ""),
+        "fr_text": row.get("text_fr", ""),
+        "auido_en": "",
+        "cloned_auido_fr": "",
+    }
 
-    target_lang = "fr"
-    records = []
-    pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
+    # Get source audio for voice cloning
+    audio_val = row.get("audio")
+    
+    # Robust audio loading: handle dict or AudioDecoder objects
+    audio_array = None
+    sr = None
 
-    for idx in range(len(ds)):
-        row = ds[idx]
+    try:
+        if isinstance(audio_val, dict):
+            audio_array = np.array(audio_val.get("array"), dtype=np.float32)
+            sr = audio_val.get("sampling_rate")
+        elif audio_val is not None:
+            # Try accessing as dict-like or object-like (for AudioDecoder)
+            try:
+                audio_array = np.array(audio_val["array"], dtype=np.float32)
+                sr = audio_val["sampling_rate"]
+            except (KeyError, TypeError):
+                audio_array = np.array(getattr(audio_val, "array", None), dtype=np.float32)
+                sr = getattr(audio_val, "sampling_rate", None)
+    except Exception as e:
+        row_record["error"] = f"Audio access error: {e}"
 
-        row_record = {
-            "speaker": str(row.get("index", f"speaker_{idx}")),
-            "text_en": row.get("text_en", ""),
-            "fr_text": row.get("text_fr", ""),
-            "auido_en": "",
-            "cloned_auido_fr": "",
-        }
+    if audio_array is None or sr is None or len(audio_array) == 0:
+        pbar.update(1)
+        return row_record
 
-        # Get source audio for voice cloning
-        audio_val = row.get("audio")
+    translated_text = row.get("text_fr", "")
+    if not translated_text:
+        row_record["error"] = "No French text"
+        pbar.update(1)
+        return row_record
+
+    audio_en_filename = f"original_{idx:05d}_en.wav"
+    audio_en_filepath = os.path.join(audio_en_dir, audio_en_filename)
+    
+    filename = f"cloned_{idx:05d}_fr.wav"
+    filepath = os.path.join(audio_dir, filename)
+
+    try:
+        # Write reference audio permanently
+        sf.write(audio_en_filepath, audio_array, sr)
+        row_record["auido_en"] = os.path.relpath(audio_en_filepath, split_dir)
         
-        # Robust audio loading: handle dict or AudioDecoder objects
-        audio_array = None
-        sr = None
-
+        # Use a thread-safe way for temp files or just unique names
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
         try:
-            if isinstance(audio_val, dict):
-                audio_array = np.array(audio_val.get("array"), dtype=np.float32)
-                sr = audio_val.get("sampling_rate")
-            elif audio_val is not None:
-                # Try accessing as dict-like or object-like (for AudioDecoder)
-                try:
-                    audio_array = np.array(audio_val["array"], dtype=np.float32)
-                    sr = audio_val["sampling_rate"]
-                except (KeyError, TypeError):
-                    audio_array = np.array(getattr(audio_val, "array", None), dtype=np.float32)
-                    sr = getattr(audio_val, "sampling_rate", None)
-        except Exception as e:
-            print(f"\n  ⚠ Row {idx}: error accessing audio data: {e}. Skipping.")
-
-        if audio_array is None or sr is None or len(audio_array) == 0:
-            print(f"\n  ⚠ Row {idx}: no valid source audio data found (type: {type(audio_val)}). Skipping.")
-            records.append(row_record)
-            pbar.update(1)
-            continue
-
-        translated_text = row.get("text_fr", "")
-        if not translated_text:
-            print(f"\n  ⚠ Row {idx}: no French text, skipping.")
-            records.append(row_record)
-            pbar.update(1)
-            continue
-
-        # Save source audio to a temp file for Chatterbox voice cloning prompt
-        # Also save it permanently to our audio_en directory
-
-        audio_en_filename = f"original_{idx:05d}_en.wav"
-        audio_en_filepath = os.path.join(audio_en_dir, audio_en_filename)
-        
-        filename = f"cloned_{idx:05d}_fr.wav"
-        filepath = os.path.join(audio_dir, filename)
-
-        try:
-            # Write reference audio permanently
-            sf.write(audio_en_filepath, audio_array, sr)
-            row_record["auido_en"] = os.path.relpath(audio_en_filepath, split_dir)
-            
-            # Write reference audio to a temp file for model specific format needs
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-                tmp_path = tmp.name
-                sf.write(tmp_path, audio_array, sr)
+            os.close(tmp_fd)
+            sf.write(tmp_path, audio_array, sr)
 
             # Generate cloned French speech
+            # NOTE: model.generate is typically thread-safe for inference
             wav = model.generate(
                 translated_text,
                 audio_prompt_path=tmp_path,
@@ -200,16 +186,36 @@ def generate_split(ds, split_name, output_dir, model, device):
             # Save output
             ta.save(filepath, wav, model.sr)
             row_record["cloned_auido_fr"] = os.path.relpath(filepath, split_dir)
-
-        except Exception as e:
-            print(f"\n  ✗ Failed row {idx} -> fr: {e}")
         finally:
-            # Clean up temp file
-            if "tmp_path" in locals() and os.path.exists(tmp_path):
+            if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-        records.append(row_record)
-        pbar.update(1)
+    except Exception as e:
+        row_record["error"] = str(e)
+
+    pbar.update(1)
+    return row_record
+
+
+def generate_split(ds, split_name, output_dir, model, device, num_workers=4):
+    """Generate French cloned audio for a single split using parallel threads."""
+    split_dir = ensure_dir(os.path.join(output_dir, split_name))
+    audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
+    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
+
+    pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
+
+    # Use ThreadPoolExecutor for parallel processing
+    # Multi-threading is often efficient for Torch inference as it releases the GIL
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        futures = [
+            executor.submit(
+                process_row, idx, ds[idx], split_name, split_dir,
+                audio_en_dir, audio_dir, model, pbar
+            )
+            for idx in range(len(ds))
+        ]
+        records = [f.result() for f in futures]
 
     pbar.close()
 
@@ -251,6 +257,12 @@ def parse_args():
         help="Number of samples for the train split (default: all remaining).",
     )
     parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="Number of parallel worker threads (default: 4).",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="cuda",
@@ -278,11 +290,11 @@ def main():
     ds_train, ds_test = load_and_split_dataset(num_train=args.num_train, num_test=args.num_test)
     model = load_model(device=args.device)
 
-    print("\n── Generating TEST split ──")
-    generate_split(ds_test, "test", args.output_dir, model, args.device)
+    print(f"\n── Generating TEST split ──")
+    generate_split(ds_test, "test", args.output_dir, model, args.device, num_workers=args.num_workers)
 
-    print("\n── Generating TRAIN split ──")
-    generate_split(ds_train, "train", args.output_dir, model, args.device)
+    print(f"\n── Generating TRAIN split ──")
+    generate_split(ds_train, "train", args.output_dir, model, args.device, num_workers=args.num_workers)
 
     print("\n" + "=" * 60)
     print("  ✓ All done!")
