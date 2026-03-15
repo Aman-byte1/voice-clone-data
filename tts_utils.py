@@ -6,6 +6,12 @@ Provides MagpieTTS model loading, audio I/O helpers, and language mappings.
 import os
 import soundfile as sf
 import numpy as np
+from tqdm import tqdm
+import tqdm as tqdm_base
+from functools import partial
+
+# Force tqdm to always show a bar with a fixed width
+tqdm_base.tqdm = partial(tqdm_base.tqdm, dynamic_ncols=False, ncols=100, ascii=True)
 from pathlib import Path
 from typing import Optional, Tuple
 

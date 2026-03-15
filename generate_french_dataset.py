@@ -22,6 +22,11 @@ import soundfile as sf
 import torchaudio as ta
 from datasets import load_dataset, concatenate_datasets
 from tqdm import tqdm
+import tqdm as tqdm_base
+from functools import partial
+
+# Force tqdm to always show a bar with a fixed width, even in non-interactive terminals
+tqdm_base.tqdm = partial(tqdm_base.tqdm, dynamic_ncols=False, ncols=100, ascii=True)
 
 DATASET_NAME = "ymoslem/acl-6060"
 TTS_MODEL_NAME = "resemble-ai/chatterbox-multilingual"
