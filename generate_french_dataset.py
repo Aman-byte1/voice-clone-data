@@ -299,8 +299,8 @@ def parse_args():
     parser.add_argument(
         "--cfg_weight",
         type=float,
-        default=0.0,
-        help="CFG weight (0.0 recommended for accent mitigation).",
+        default=0.1,
+        help="CFG weight (0.1 recommended for strong accent mitigation).",
     )
     return parser.parse_args()
 
