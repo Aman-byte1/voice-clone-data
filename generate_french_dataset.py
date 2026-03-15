@@ -130,7 +130,7 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
 # ─── Generation ────────────────────────────────────────────────────────────────
 
 
-def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar):
+def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, language_id="fr", cfg_weight=0.0):
     """Process a single row for voice cloning."""
     row_record = {
         "speaker": str(row.get("index", f"speaker_{idx}")),
@@ -196,6 +196,8 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
                 wav = model.generate(
                     translated_text,
                     audio_prompt_path=tmp_path,
+                    language_id=language_id,
+                    cfg_weight=cfg_weight
                 )
 
             # Save output
@@ -212,7 +214,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     return row_record
 
 
-def generate_split(ds, split_name, output_dir, model, device, num_workers=4):
+def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0):
     """Generate French cloned audio for a single split using parallel threads."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
@@ -226,7 +228,9 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=4):
         futures = [
             executor.submit(
                 process_row, idx, ds[idx], split_name, split_dir,
-                audio_en_dir, audio_dir, model, pbar
+                audio_en_dir, audio_dir, model, pbar,
+                language_id=language_id,
+                cfg_weight=cfg_weight
             )
             for idx in range(len(ds))
         ]
@@ -278,10 +282,16 @@ def parse_args():
         help="Number of parallel worker threads (default: 4).",
     )
     parser.add_argument(
-        "--device",
+        "--language_id",
         type=str,
-        default="cuda",
-        help="Device for inference.",
+        default="fr",
+        help="Language ID for cloning (e.g. 'fr', 'en'). Use 'fr' for French.",
+    )
+    parser.add_argument(
+        "--cfg_weight",
+        type=float,
+        default=0.0,
+        help="CFG weight (0.0 recommended for cross-lingual to mitigate accent).",
     )
     return parser.parse_args()
 
@@ -306,10 +316,14 @@ def main():
     model = load_model(device=args.device)
 
     print(f"\n── Generating TEST split ──")
-    generate_split(ds_test, "test", args.output_dir, model, args.device, num_workers=args.num_workers)
+    generate_split(ds_test, "test", args.output_dir, model, args.device, 
+                   num_workers=args.num_workers, language_id=args.language_id, 
+                   cfg_weight=args.cfg_weight)
 
     print(f"\n── Generating TRAIN split ──")
-    generate_split(ds_train, "train", args.output_dir, model, args.device, num_workers=args.num_workers)
+    generate_split(ds_train, "train", args.output_dir, model, args.device, 
+                   num_workers=args.num_workers, language_id=args.language_id, 
+                   cfg_weight=args.cfg_weight)
 
     print("\n" + "=" * 60)
     print("  ✓ All done!")
