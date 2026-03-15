@@ -182,7 +182,6 @@ def generate_split(ds, split_name, output_dir, model, device):
             wav = model.generate(
                 translated_text,
                 audio_prompt_path=tmp_path,
-                language_id=target_lang,
             )
 
             # Save output

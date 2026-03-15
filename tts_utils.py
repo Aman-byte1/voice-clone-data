@@ -101,7 +101,6 @@ def generate_speech(
     wav = model.generate(
         text,
         audio_prompt_path=audio_prompt_path,
-        language_id=language,
     )
 
     # Convert to numpy if it's a torch tensor
