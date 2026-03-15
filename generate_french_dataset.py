@@ -282,6 +282,12 @@ def parse_args():
         help="Number of parallel worker threads (default: 4).",
     )
     parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="Device for inference (e.g. 'cuda', 'cpu').",
+    )
+    parser.add_argument(
         "--language_id",
         type=str,
         default="fr",
