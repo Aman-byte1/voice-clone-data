@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pandas as pd
 import soundfile as sf
+import torch
 import torchaudio as ta
 from datasets import load_dataset, concatenate_datasets
 from tqdm import tqdm
@@ -54,7 +55,6 @@ def load_model(device: str = "cuda"):
 
     # Monkeypatch torch.load to handle CPU-only environments for Chatterbox checkpoints
     if device == "cpu":
-        import torch
         original_load = torch.load
         def patched_load(*args, **kwargs):
             if 'map_location' not in kwargs:

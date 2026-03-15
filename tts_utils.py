@@ -7,6 +7,7 @@ import os
 import soundfile as sf
 import numpy as np
 from tqdm import tqdm
+import torch
 import tqdm as tqdm_base
 from functools import partial
 
@@ -59,7 +60,6 @@ def load_chatterbox_model(device: str = "cuda"):
     if _cached_model is not None:
         return _cached_model
 
-    import torch
     # Handle CPU monkeypatch if needed
     if device == "cpu" and not hasattr(torch.load, "_is_patched"):
         original_load = torch.load
