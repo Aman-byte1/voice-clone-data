@@ -70,12 +70,22 @@ def load_model(device: str = "cuda"):
 
     # The user is using ChatterboxTTS now
     print(f"Loading Chatterbox TTS model...")
-    # Attempting to force attn_implementation="eager" to avoid SDPA error on some environments
+
+    # Python 3.13 / RunPod: resemble-perth often fails to load its watermarker,
+    # leading to TypeError: 'NoneType' object is not callable.
     try:
-        _model = ChatterboxTTS.from_pretrained(device=device, attn_implementation="eager")
-    except TypeError:
-        # If the specific version doesn't support the kwarg, fall back
-        _model = ChatterboxTTS.from_pretrained(device=device)
+        import perth
+        if not hasattr(perth, "PerthImplicitWatermarker") or perth.PerthImplicitWatermarker is None:
+            print("⚠ resemble-perth is broken. Applying dummy watermarker monkeypatch.")
+            class DummyWatermarker:
+                def __init__(self, *args, **kwargs): pass
+                def __call__(self, audio, *args, **kwargs): return audio
+            perth.PerthImplicitWatermarker = DummyWatermarker
+    except ImportError:
+        pass
+
+    # ChatterboxTTS.from_pretrained() often doesn't like attn_implementation in stable releases
+    _model = ChatterboxTTS.from_pretrained(device=device)
     print("Model loaded successfully.")
     return _model
 
