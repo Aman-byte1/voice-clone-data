@@ -42,7 +42,7 @@ from tts_utils import (
     SPEAKER_MAP,
     ensure_dir,
     generate_speech,
-    load_magpie_model,
+    load_chatterbox_model,
     save_audio,
     DEFAULT_SAMPLE_RATE,
 )
@@ -107,7 +107,7 @@ def enhance_dataset(
     """
     audio_dir = ensure_dir(os.path.join(output_dir, "cloned_audio"))
     ds = load_acl_dataset(split=split, max_rows=max_rows)
-    model = load_magpie_model(device=device)
+    model = load_chatterbox_model(device=device)
 
     records = []
     total = len(ds) * len(target_languages)
@@ -143,7 +143,6 @@ def enhance_dataset(
             if not translated_text:
                 print(f"\n  ⚠ Row {idx}: no text for '{target_lang}', skipping.")
                 row_record[f"cloned_voice_{target_lang}"] = ""
-                row_record[f"cloned_length_{target_lang}"] = 0
                 pbar.update(1)
                 continue
 
@@ -151,20 +150,18 @@ def enhance_dataset(
             filepath = os.path.join(lang_audio_dir, filename)
 
             try:
-                audio, length = generate_speech(
-                    model, translated_text, target_lang, speaker=speaker
+                audio, sr = generate_speech(
+                    model, translated_text, target_lang, audio_prompt_path=None
                 )
-                save_audio(audio, filepath)
+                save_audio(audio, filepath, sample_rate=sr)
 
                 row_record[f"cloned_voice_{target_lang}"] = os.path.relpath(
                     filepath, output_dir
                 )
-                row_record[f"cloned_length_{target_lang}"] = length
 
             except Exception as e:
                 print(f"\n  ✗ Failed row {idx} -> {target_lang}: {e}")
                 row_record[f"cloned_voice_{target_lang}"] = ""
-                row_record[f"cloned_length_{target_lang}"] = 0
 
             pbar.update(1)
 
@@ -188,7 +185,6 @@ def enhance_dataset(
         print(f"  Source dataset: {DATASET_NAME} ({split})")
         print(f"  Total rows:      {len(records)}")
         print(f"  Target languages: {target_languages}")
-        print(f"  Speaker used:    {speaker}")
         for lang in target_languages:
             col = f"cloned_voice_{lang}"
             filled = df[col].astype(bool).sum() if col in df.columns else 0
@@ -203,15 +199,9 @@ def enhance_dataset(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Enhance ACL 60/60 dataset with multilingual cloned voices using MagpieTTS.",
+        description="Enhance ACL 60/60 dataset with multilingual cloned voices using ChatterboxTTS.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Languages supported by BOTH ACL 60/60 AND MagpieTTS:
-  de (German), fr (French), ja (Japanese), zh (Chinese)
-
-Note: Arabic (ar) is in the ACL dataset but NOT supported by MagpieTTS.
-      Use a different TTS model for Arabic voice cloning.
-        """,
+        epilog="Note: Use Chatterbox Multilingual TTS for voice cloning.",
     )
     parser.add_argument(
         "--output_dir",
@@ -237,13 +227,6 @@ Note: Arabic (ar) is in the ACL dataset but NOT supported by MagpieTTS.
         type=int,
         default=None,
         help="Max number of rows to process (None = all).",
-    )
-    parser.add_argument(
-        "--speaker",
-        type=str,
-        default=DEFAULT_SPEAKER,
-        choices=SPEAKER_NAMES,
-        help="MagpieTTS speaker to use for cloned voices.",
     )
     parser.add_argument(
         "--device",
@@ -291,7 +274,6 @@ def main():
     print(f"  Dataset:          {DATASET_NAME}")
     print(f"  Split:            {args.split}")
     print(f"  Target languages: {target_languages}")
-    print(f"  Speaker:          {args.speaker}")
     print(f"  Max rows:         {args.max_rows or 'all'}")
     print(f"  Output dir:       {args.output_dir}")
     print(f"  Device:           {args.device}")

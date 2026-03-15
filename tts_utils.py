@@ -39,29 +39,40 @@ SPEAKER_NAMES = list(SPEAKER_MAP.keys())
 
 # ─── Model Loading ─────────────────────────────────────────────────────────────
 
-_cached_model = None
-
-
-def load_magpie_model(device: str = "cuda"):
+def load_chatterbox_model(device: str = "cuda"):
     """
-    Load the MagpieTTS model from HuggingFace, with caching to avoid reloading.
+    Load the ChatterboxTTS model from HuggingFace, with caching.
 
     Args:
         device: Device to load model onto ('cuda' or 'cpu').
 
     Returns:
-        The loaded MagpieTTSModel instance.
+        The loaded ChatterboxTTS instance.
     """
     global _cached_model
     if _cached_model is not None:
         return _cached_model
 
-    from nemo.collections.tts.models import MagpieTTSModel
+    import torch
+    # Handle CPU monkeypatch if needed
+    if device == "cpu" and not hasattr(torch.load, "_is_patched"):
+        original_load = torch.load
+        def patched_load(*args, **kwargs):
+            if 'map_location' not in kwargs:
+                kwargs['map_location'] = 'cpu'
+            return original_load(*args, **kwargs)
+        patched_load._is_patched = True
+        torch.load = patched_load
 
-    print("Loading MagpieTTS model from HuggingFace...")
-    model = MagpieTTSModel.from_pretrained("nvidia/magpie_tts_multilingual_357m")
-    model = model.to(device)
-    model.eval()
+    from chatterbox.tts import ChatterboxTTS
+
+    print("Loading ChatterboxTTS model from HuggingFace...")
+    # Fix for SDPA conflict in some environments
+    try:
+        model = ChatterboxTTS.from_pretrained(device=device, attn_implementation="eager")
+    except TypeError:
+        model = ChatterboxTTS.from_pretrained(device=device)
+    
     _cached_model = model
     print("Model loaded successfully.")
     return model
@@ -73,52 +84,33 @@ def generate_speech(
     model,
     text: str,
     language: str,
-    speaker: str = "Sofia",
-    apply_tn: bool = True,
+    audio_prompt_path: Optional[str] = None,
 ) -> Tuple[np.ndarray, int]:
     """
-    Generate speech audio from text using MagpieTTS.
+    Generate speech audio from text using ChatterboxTTS.
 
     Args:
-        model: Loaded MagpieTTSModel instance.
+        model: Loaded ChatterboxTTS instance.
         text: Text transcript to synthesize.
         language: Language code (e.g., 'en', 'fr', 'zh').
-        speaker: Speaker name (John, Sofia, Aria, Jason, Leo).
-        apply_tn: Whether to apply text normalization (only supported for en, es, de, fr, it, zh).
+        audio_prompt_path: Optional path to audio for voice cloning.
 
     Returns:
-        Tuple of (audio_numpy_array, audio_length).
-
-    Raises:
-        ValueError: If language or speaker is not supported.
+        Tuple of (audio_numpy_array, sample_rate).
     """
-    if language not in SUPPORTED_LANGUAGES:
-        raise ValueError(
-            f"Language '{language}' not supported. "
-            f"Supported: {list(SUPPORTED_LANGUAGES.keys())}"
-        )
-    if speaker not in SPEAKER_MAP:
-        raise ValueError(
-            f"Speaker '{speaker}' not supported. "
-            f"Supported: {SPEAKER_NAMES}"
-        )
-
-    # Only apply TN for languages that support it
-    use_tn = apply_tn and (language in TN_SUPPORTED_LANGUAGES)
-
-    speaker_idx = SPEAKER_MAP[speaker]
-    audio, audio_len = model.do_tts(
+    wav = model.generate(
         text,
-        language=language,
-        apply_TN=use_tn,
-        speaker_index=speaker_idx,
+        audio_prompt_path=audio_prompt_path,
+        language_id=language,
     )
 
-    # Convert to numpy
-    audio_np = audio.cpu().numpy().squeeze()
-    length = audio_len.item() if hasattr(audio_len, "item") else int(audio_len)
+    # Convert to numpy if it's a torch tensor
+    if hasattr(wav, "cpu"):
+        audio_np = wav.cpu().numpy().squeeze()
+    else:
+        audio_np = np.array(wav).squeeze()
 
-    return audio_np[:length], length
+    return audio_np, model.sr
 
 
 # ─── Audio I/O ──────────────────────────────────────────────────────────────────

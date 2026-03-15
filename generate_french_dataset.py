@@ -57,25 +57,16 @@ def load_model(device: str = "cuda"):
         torch.load = patched_load
         print("✓ Applied torch.load monkeypatch for CPU execution.")
 
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-    import chatterbox.mtl_tts as mtl_tts
+    from chatterbox.tts import ChatterboxTTS
 
-    # Aggressively mock Resemble Watermarker AFTER importing chatterbox
-    # The real resemble_perth sets its class to None if CUDA isn't available
-    class MockWatermarker:
-        def __init__(self, *args, **kwargs): pass
-        def __call__(self, *args, **kwargs): return self
-        def encode(self, wav, *args, **kwargs): return wav
-        def __getattr__(self, name): return lambda *a, **k: None
-
-    class MockPerth:
-        PerthImplicitWatermarker = MockWatermarker
-
-    mtl_tts.perth = MockPerth()
-    print("✓ Forcefully applied Resemble Watermarker mock on mtl_tts.perth.")
-
-    print(f"Loading Chatterbox Multilingual TTS model...")
-    _model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+    # The user is using ChatterboxTTS now
+    print(f"Loading Chatterbox TTS model...")
+    # Attempting to force attn_implementation="eager" to avoid SDPA error on some environments
+    try:
+        _model = ChatterboxTTS.from_pretrained(device=device, attn_implementation="eager")
+    except TypeError:
+        # If the specific version doesn't support the kwarg, fall back
+        _model = ChatterboxTTS.from_pretrained(device=device)
     print("Model loaded successfully.")
     return _model
 
