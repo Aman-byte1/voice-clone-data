@@ -62,9 +62,9 @@ if command -v nvidia-smi &> /dev/null; then
 fi
 
 if [ "$IS_BLACKWELL" = true ]; then
-    # Blackwell requires PyTorch 2.7+ and CUDA 12.8 wheels. 
+    # Blackwell requires the entire ecosystem (torch, torchvision, torchaudio) from the nightly cu128 index.
     # Must use --pre and --upgrade to bypass installed stable versions.
-    $PY -m pip install --pre --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
+    $PY -m pip install --pre --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
 else
     # Standard install for stable GPUs (sm_50 through sm_90)
     $PY -m pip install torch torchaudio
