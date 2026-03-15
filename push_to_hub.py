@@ -71,7 +71,11 @@ def push_dataset(
     for split_name, split_dir, csv_path in found_splits:
         print(f"\nProcessing split: {split_name}")
         print(f"  Loading metadata from {csv_path}")
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path).fillna("")
+        # Ensure 'error' and other string columns are explicitly strings
+        for col in df.columns:
+            if "audio" not in col.lower() and "voice" not in col.lower() and "auido" not in col.lower():
+                df[col] = df[col].astype(str)
         print(f"  Rows: {len(df)}, Columns: {list(df.columns)}")
 
         from datasets import Features, Value, Audio
