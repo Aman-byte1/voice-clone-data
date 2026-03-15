@@ -42,17 +42,21 @@ echo "============================================"
 echo ""
 echo "[1/4] Installing system dependencies (ffmpeg)..."
 if command -v apt-get &> /dev/null; then
-    apt-get update && apt-get install -y ffmpeg libavutil-dev libavcodec-dev libavformat-dev
+    SUDO_CMD=""
+    if command -v sudo &> /dev/null; then SUDO_CMD="sudo"; fi
+    $SUDO_CMD apt-get update && $SUDO_CMD apt-get install -y ffmpeg libavutil-dev libavcodec-dev libavformat-dev
 fi
 
 echo "[1/4] Installing python dependencies..."
+$PY -m pip uninstall -y torchcodec || true
 $PY -m pip install six python-dateutil --force-reinstall
 # Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
 $PY -m pip install chatterbox-tts --no-deps
 # Install actual runtime deps separately (uses system-compatible versions)
+# NOTE: torchcodec is excluded to avoid version conflicts; datasets will fallback.
 $PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm datasets \
     transformers safetensors tokenizers conformer resemble-perth \
-    s3tokenizer diffusers pykakasi spacy-pkuseg gradio torchcodec librosa \
+    s3tokenizer diffusers pykakasi spacy-pkuseg gradio librosa \
     omegaconf pyloudnorm
 
 # ── 2. Set HuggingFace token ──────────────────────────────────────────────
