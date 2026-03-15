@@ -49,12 +49,31 @@ fi
 
 echo "[1/4] Installing python dependencies..."
 $PY -m pip install six python-dateutil --force-reinstall
+
+# --- Blackwell GPU (sm_120) Compatibility Support ---
+# Check if hardware is Blackwell (RTX 4500, etc.)
+IS_BLACKWELL=false
+if command -v nvidia-smi &> /dev/null; then
+    if nvidia-smi --query-gpu=name --format=csv,noheader | grep -qi "4500"; then
+        echo "✦ Blackwell GPU (RTX 4500) detected. Applying specialized PyTorch install..."
+        IS_BLACKWELL=true
+    fi
+fi
+
+if [ "$IS_BLACKWELL" = true ]; then
+    # Blackwell requires PyTorch 2.7+ and CUDA 12.8 wheels
+    $PY -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+else
+    # Standard install for stable GPUs (sm_50 through sm_90)
+    $PY -m pip install torch torchaudio
+fi
+
 # Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
 $PY -m pip install chatterbox-tts --no-deps
-# Install actual runtime deps separately (uses system-compatible versions)
+# Install actual runtime deps separately
 # NOTE: Pinning datasets < 3.2.0 to avoid mandatory torchcodec dependency
 # NOTE: Pinning transformers==4.46.3 as strictly required by chatterbox-tts 0.1.6
-$PY -m pip install torch torchaudio numpy pandas huggingface_hub soundfile tqdm "datasets<3.2.0" \
+$PY -m pip install numpy pandas huggingface_hub soundfile tqdm "datasets<3.2.0" \
     "transformers==4.46.3" safetensors tokenizers conformer resemble-perth \
     s3tokenizer diffusers pykakasi spacy-pkuseg gradio librosa \
     soundfile omegaconf pyloudnorm
