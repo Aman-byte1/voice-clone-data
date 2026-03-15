@@ -193,10 +193,13 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
             # NOTE: ChatterboxTTS is NOT thread-safe for concurrent inference on a single instance.
             # We use a lock to ensure only one thread generates at a time, while others handle I/O.
             with _model_lock:
+                # NOTE: Exactly 0.0 can cause a tensor mismatch in some T3 versions.
+                # We use a tiny epsilon to achieve the same effect safely.
+                inference_cfg = cfg_weight if cfg_weight > 0 else 0.001
                 wav = model.generate(
                     translated_text,
                     audio_prompt_path=tmp_path,
-                    cfg_weight=cfg_weight
+                    cfg_weight=inference_cfg
                 )
 
             # Save output
@@ -288,8 +291,8 @@ def parse_args():
     parser.add_argument(
         "--cfg_weight",
         type=float,
-        default=0.5,
-        help="CFG weight (0.5 is default, 0.0 might cause crashes in some versions).",
+        default=0.0,
+        help="CFG weight (0.0 recommended for accent mitigation).",
     )
     return parser.parse_args()
 
