@@ -15,6 +15,8 @@ import argparse
 import os
 import sys
 import tempfile
+import threading
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -39,6 +41,7 @@ RANDOM_SEED = 0
 # ─── Model Loading ─────────────────────────────────────────────────────────────
 
 _model = None
+_model_lock = threading.Lock()
 
 
 def load_model(device: str = "cuda"):
@@ -177,11 +180,13 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
             sf.write(tmp_path, audio_array, sr)
 
             # Generate cloned French speech
-            # NOTE: model.generate is typically thread-safe for inference
-            wav = model.generate(
-                translated_text,
-                audio_prompt_path=tmp_path,
-            )
+            # NOTE: ChatterboxTTS is NOT thread-safe for concurrent inference on a single instance.
+            # We use a lock to ensure only one thread generates at a time, while others handle I/O.
+            with _model_lock:
+                wav = model.generate(
+                    translated_text,
+                    audio_prompt_path=tmp_path,
+                )
 
             # Save output
             ta.save(filepath, wav, model.sr)
@@ -190,8 +195,8 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-    except Exception as e:
-        row_record["error"] = str(e)
+    except Exception:
+        row_record["error"] = traceback.format_exc()
 
     pbar.update(1)
     return row_record
