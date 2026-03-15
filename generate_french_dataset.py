@@ -66,10 +66,10 @@ def load_model(device: str = "cuda"):
         torch.load = patched_load
         print("✓ Applied torch.load monkeypatch for CPU execution.")
 
-    from chatterbox.tts import ChatterboxTTS
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-    # The user is using ChatterboxTTS now
-    print(f"Loading Chatterbox TTS model...")
+    # The user is using ChatterboxMultilingualTTS now
+    print(f"Loading Chatterbox Multilingual TTS model...")
 
     # Python 3.13 / RunPod: resemble-perth often fails to load its watermarker,
     # leading to TypeError: 'NoneType' object is not callable.
@@ -84,8 +84,8 @@ def load_model(device: str = "cuda"):
     except ImportError:
         pass
 
-    # ChatterboxTTS.from_pretrained() often doesn't like attn_implementation in stable releases
-    _model = ChatterboxTTS.from_pretrained(device=device)
+    # ChatterboxMultilingualTTS.from_pretrained()
+    _model = ChatterboxMultilingualTTS.from_pretrained(device=device)
     print("Model loaded successfully.")
     return _model
 
@@ -130,7 +130,7 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
 # ─── Generation ────────────────────────────────────────────────────────────────
 
 
-def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, cfg_weight=0.0):
+def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, language_id="fr", cfg_weight=0.0):
     """Process a single row for voice cloning."""
     row_record = {
         "speaker": str(row.get("index", f"speaker_{idx}")),
@@ -199,6 +199,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
                 wav = model.generate(
                     translated_text,
                     audio_prompt_path=tmp_path,
+                    language_id=language_id,
                     cfg_weight=inference_cfg
                 )
 
@@ -216,7 +217,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     return row_record
 
 
-def generate_split(ds, split_name, output_dir, model, device, num_workers=8, cfg_weight=0.5):
+def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0):
     """Generate French cloned audio for a single split using parallel threads."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
@@ -231,6 +232,7 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, cfg
             executor.submit(
                 process_row, idx, ds[idx], split_name, split_dir,
                 audio_en_dir, audio_dir, model, pbar,
+                language_id=language_id,
                 cfg_weight=cfg_weight
             )
             for idx in range(len(ds))
@@ -289,6 +291,12 @@ def parse_args():
         help="Device for inference (e.g. 'cuda', 'cpu').",
     )
     parser.add_argument(
+        "--language_id",
+        type=str,
+        default="fr",
+        help="Target language ID (e.g. 'fr' for French, 'en' for English).",
+    )
+    parser.add_argument(
         "--cfg_weight",
         type=float,
         default=0.0,
@@ -318,11 +326,13 @@ def main():
 
     print(f"\n── Generating TEST split ──")
     generate_split(ds_test, "test", args.output_dir, model, args.device, 
-                   num_workers=args.num_workers, cfg_weight=args.cfg_weight)
+                   num_workers=args.num_workers, language_id=args.language_id, 
+                   cfg_weight=args.cfg_weight)
 
     print(f"\n── Generating TRAIN split ──")
     generate_split(ds_train, "train", args.output_dir, model, args.device, 
-                   num_workers=args.num_workers, cfg_weight=args.cfg_weight)
+                   num_workers=args.num_workers, language_id=args.language_id, 
+                   cfg_weight=args.cfg_weight)
 
     print("\n" + "=" * 60)
     print("  ✓ All done!")
