@@ -134,21 +134,29 @@ def generate_split(ds, split_name, output_dir, model, device):
         }
 
         # Get source audio for voice cloning
-        # Trying both 'audio' (standard) and checking keys
         audio_val = row.get("audio")
         
-        if idx == 0:
-            print(f"\n[DEBUG] Row 0 Keys: {list(row.keys())}")
-            print(f"[DEBUG] Row 0 'audio' type: {type(audio_val)}")
-            if isinstance(audio_val, dict):
-                print(f"[DEBUG] Row 0 'audio' keys: {list(audio_val.keys())}")
+        # Robust audio loading: handle dict or AudioDecoder objects
+        audio_array = None
+        sr = None
 
-        if audio_val is None or not isinstance(audio_val, dict):
-            # Fallback check if it's named differently or not a dict
-            if audio_val is not None:
-                print(f"\n  ⚠ Row {idx}: source audio is {type(audio_val)}, expected dict. Skipping.")
-            else:
-                print(f"\n  ⚠ Row {idx}: no 'audio' key found in row. Skipping.")
+        try:
+            if isinstance(audio_val, dict):
+                audio_array = np.array(audio_val.get("array"), dtype=np.float32)
+                sr = audio_val.get("sampling_rate")
+            elif audio_val is not None:
+                # Try accessing as dict-like or object-like (for AudioDecoder)
+                try:
+                    audio_array = np.array(audio_val["array"], dtype=np.float32)
+                    sr = audio_val["sampling_rate"]
+                except (KeyError, TypeError):
+                    audio_array = np.array(getattr(audio_val, "array", None), dtype=np.float32)
+                    sr = getattr(audio_val, "sampling_rate", None)
+        except Exception as e:
+            print(f"\n  ⚠ Row {idx}: error accessing audio data: {e}. Skipping.")
+
+        if audio_array is None or sr is None or len(audio_array) == 0:
+            print(f"\n  ⚠ Row {idx}: no valid source audio data found (type: {type(audio_val)}). Skipping.")
             records.append(row_record)
             pbar.update(1)
             continue
@@ -162,8 +170,6 @@ def generate_split(ds, split_name, output_dir, model, device):
 
         # Save source audio to a temp file for Chatterbox voice cloning prompt
         # Also save it permanently to our audio_en directory
-        audio_array = np.array(audio_val["array"], dtype=np.float32)
-        sr = audio_val["sampling_rate"]
 
         audio_en_filename = f"original_{idx:05d}_en.wav"
         audio_en_filepath = os.path.join(audio_en_dir, audio_en_filename)
