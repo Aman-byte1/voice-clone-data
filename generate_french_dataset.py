@@ -136,8 +136,8 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
         "speaker": str(row.get("index", f"speaker_{idx}")),
         "text_en": row.get("text_en", ""),
         "fr_text": row.get("text_fr", ""),
-        "auido_en": "",
-        "cloned_auido_fr": "",
+        "audio_en": "",
+        "cloned_audio_fr": "",
     }
 
     # Get source audio for voice cloning
@@ -181,7 +181,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     try:
         # Write reference audio permanently
         sf.write(audio_en_filepath, audio_array, sr)
-        row_record["auido_en"] = os.path.relpath(audio_en_filepath, split_dir)
+        row_record["audio_en"] = os.path.relpath(audio_en_filepath, split_dir)
         
         # Use a thread-safe way for temp files or just unique names
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
@@ -201,7 +201,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
 
             # Save output
             ta.save(filepath, wav, model.sr)
-            row_record["cloned_auido_fr"] = os.path.relpath(filepath, split_dir)
+            row_record["cloned_audio_fr"] = os.path.relpath(filepath, split_dir)
         finally:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
@@ -213,7 +213,7 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     return row_record
 
 
-def generate_split(ds, split_name, output_dir, model, device, num_workers=8, cfg_weight=0.0):
+def generate_split(ds, split_name, output_dir, model, device, num_workers=8, cfg_weight=0.5):
     """Generate French cloned audio for a single split using parallel threads."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
@@ -247,7 +247,7 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, cfg
         df.to_json(json_path, orient="records", force_ascii=False, indent=2)
         print(f"  ✓ Saved JSON to {json_path}")
 
-        filled = df["cloned_auido_fr"].astype(bool).sum()
+        filled = df["cloned_audio_fr"].astype(bool).sum()
         print(f"  ✓ Successful clones: {filled}/{len(records)}")
     else:
         print(f"  ⚠ No records for {split_name}")
@@ -288,8 +288,8 @@ def parse_args():
     parser.add_argument(
         "--cfg_weight",
         type=float,
-        default=0.0,
-        help="CFG weight (0.0 recommended for cross-lingual to mitigate accent).",
+        default=0.5,
+        help="CFG weight (0.5 is default, 0.0 might cause crashes in some versions).",
     )
     return parser.parse_args()
 
