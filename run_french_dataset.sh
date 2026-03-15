@@ -54,15 +54,17 @@ $PY -m pip install six python-dateutil --force-reinstall
 # Check if hardware is Blackwell (RTX 4500, etc.)
 IS_BLACKWELL=false
 if command -v nvidia-smi &> /dev/null; then
-    if nvidia-smi --query-gpu=name --format=csv,noheader | grep -qi "4500"; then
-        echo "✦ Blackwell GPU (RTX 4500) detected. Applying specialized PyTorch install..."
+    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+    if echo "$GPU_NAME" | grep -qiE "4500|Blackwell|sm_120"; then
+        echo "✦ Blackwell GPU detected ($GPU_NAME). Applying specialized PyTorch (sm_120) install..."
         IS_BLACKWELL=true
     fi
 fi
 
 if [ "$IS_BLACKWELL" = true ]; then
-    # Blackwell requires PyTorch 2.7+ and CUDA 12.8 wheels
-    $PY -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+    # Blackwell requires PyTorch 2.7+ and CUDA 12.8 wheels. 
+    # Must use --pre and --upgrade to bypass installed stable versions.
+    $PY -m pip install --pre --upgrade torch torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
 else
     # Standard install for stable GPUs (sm_50 through sm_90)
     $PY -m pip install torch torchaudio
