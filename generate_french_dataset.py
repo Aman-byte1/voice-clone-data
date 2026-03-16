@@ -366,6 +366,8 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
                 if checkpoint_step and count % checkpoint_step == 0 and count < total:
                     # Save partial CSV so the uploader sees current progress
                     temp_df = pd.DataFrame([r for r in records if r is not None])
+                    if "_idx" in temp_df.columns:
+                        temp_df = temp_df.drop(columns=["_idx", "_resume_key"], errors="ignore")
                     temp_df.to_csv(csv_path, index=False)
                     trigger_upload(output_dir, repo_name)
     else:
@@ -485,6 +487,10 @@ def main():
                    num_workers=args.num_workers, language_id=args.language_id, 
                    cfg_weight=args.cfg_weight, repo_name=args.repo_name, 
                    checkpoint_pct=args.checkpoint_pct)
+
+    # Final upload to ensure 100% completion is pushed
+    if args.repo_name:
+        trigger_upload(args.output_dir, args.repo_name)
 
     print("\n" + "=" * 60)
     print("  ✓ All done!")

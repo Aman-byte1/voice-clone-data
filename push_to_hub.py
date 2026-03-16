@@ -78,6 +78,12 @@ def push_dataset(
                 df[col] = df[col].astype(str)
         print(f"  Rows: {len(df)}, Columns: {list(df.columns)}")
 
+        # Drop internal columns starting with '_'
+        internal_cols = [c for c in df.columns if c.startswith("_")]
+        if internal_cols:
+            print(f"  Dropping internal columns: {internal_cols}")
+            df = df.drop(columns=internal_cols)
+
         from datasets import Features, Value, Audio
 
         # Resolve audio paths to absolute paths
