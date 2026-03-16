@@ -14,10 +14,13 @@ Usage (on server):
 import argparse
 import os
 import sys
+import random
+import time
+import subprocess
 import tempfile
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -216,8 +219,22 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     pbar.update(1)
     return row_record
 
+def trigger_upload(output_dir, repo_name):
+    """Trigger the push_to_hub.py script to update HuggingFace."""
+    if not repo_name:
+        return
+    print(f"\n[Incremental Upload] Pushing to {repo_name}...")
+    try:
+        subprocess.run(
+            [sys.executable, "push_to_hub.py", "--output_dir", output_dir, "--repo_name", repo_name],
+            check=True
+        )
+        print(f"[Incremental Upload] ✓ Sync complete.")
+    except Exception as e:
+        print(f"[Incremental Upload] ⚠ Push failed: {e}")
 
-def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0):
+
+def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0, repo_name=None, checkpoint_pct=None):
     """Generate French cloned audio for a single split using parallel threads."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
@@ -227,17 +244,33 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
 
     # Use ThreadPoolExecutor for parallel processing
     # Multi-threading is often efficient for Torch inference as it releases the GIL
+    total = len(ds)
+    checkpoint_step = max(1, int(total * (checkpoint_pct / 100.0))) if checkpoint_pct else None
+    
+    records = []
     with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = [
+        futures = {
             executor.submit(
                 process_row, idx, ds[idx], split_name, split_dir,
                 audio_en_dir, audio_dir, model, pbar,
                 language_id=language_id,
                 cfg_weight=cfg_weight
-            )
-            for idx in range(len(ds))
-        ]
-        records = [f.result() for f in futures]
+            ): idx 
+            for idx in range(total)
+        }
+        
+        count = 0
+        for future in as_completed(futures):
+            res = future.result()
+            records.append(res)
+            count += 1
+            
+            # Periodic checkpoint upload
+            if checkpoint_step and count % checkpoint_step == 0 and count < total:
+                # Save partial CSV so the uploader sees current progress
+                temp_df = pd.DataFrame([r for r in records if r is not None])
+                temp_df.to_csv(os.path.join(split_dir, "metadata_cloned.csv"), index=False)
+                trigger_upload(output_dir, repo_name)
 
     pbar.close()
 
@@ -302,6 +335,18 @@ def parse_args():
         default=0.1,
         help="CFG weight (0.1 recommended for strong accent mitigation).",
     )
+    parser.add_argument(
+        "--repo_name",
+        type=str,
+        default=None,
+        help="Optional: HuggingFace repo name for incremental uploads.",
+    )
+    parser.add_argument(
+        "--checkpoint_pct",
+        type=int,
+        default=None,
+        help="Optional: Upload to HF every X percent of completion.",
+    )
     return parser.parse_args()
 
 
@@ -328,11 +373,16 @@ def main():
     generate_split(ds_test, "test", args.output_dir, model, args.device, 
                    num_workers=args.num_workers, language_id=args.language_id, 
                    cfg_weight=args.cfg_weight)
+    
+    # Always upload after test set if repo_name is provided
+    if args.repo_name:
+        trigger_upload(args.output_dir, args.repo_name)
 
     print(f"\n── Generating TRAIN split ──")
     generate_split(ds_train, "train", args.output_dir, model, args.device, 
                    num_workers=args.num_workers, language_id=args.language_id, 
-                   cfg_weight=args.cfg_weight)
+                   cfg_weight=args.cfg_weight, repo_name=args.repo_name, 
+                   checkpoint_pct=args.checkpoint_pct)
 
     print("\n" + "=" * 60)
     print("  ✓ All done!")

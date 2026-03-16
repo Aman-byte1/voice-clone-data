@@ -98,9 +98,12 @@ echo "✓ HuggingFace token configured"
 NUM_TEST=${1:-100}
 NUM_TRAIN=${2:-784}
 NUM_WORKERS=${3:-4}
+REPO_NAME=${4:-"amanuelbyte/acl6060-voice-cloning-fr"}
+CHECKPOINT_PCT=${5:-10}
 
 echo "       Test: $NUM_TEST samples, Train: $NUM_TRAIN samples"
 echo "       Parallel workers: $NUM_WORKERS"
+echo "       HF Repo: $REPO_NAME (Upload every $CHECKPOINT_PCT%)"
 
 # Auto-detect device
 DEVICE="cuda"
@@ -116,21 +119,23 @@ $PY generate_french_dataset.py \
     --num_test "$NUM_TEST" \
     --num_train "$NUM_TRAIN" \
     --num_workers "$NUM_WORKERS" \
-    --device "$DEVICE"
+    --device "$DEVICE" \
+    --repo_name "$REPO_NAME" \
+    --checkpoint_pct "$CHECKPOINT_PCT"
 
 echo "✓ Generation complete"
 
-# ── 4. Push to HuggingFace ──────────────────────────────────────────────
+# ── 4. Final Push ─────────────────────────────────────────────────────────
 echo ""
-echo "[4/4] Pushing dataset to HuggingFace..."
+echo "[4/4] Final push to HuggingFace..."
 $PY push_to_hub.py \
     --output_dir ./output/acl6060_fr \
-    --repo_name amanuelbyte/acl6060-voice-cloning-fr
+    --repo_name "$REPO_NAME"
 
 echo "✓ Push complete"
 
 echo ""
 echo "============================================"
 echo "  ✓ Pipeline complete!"
-echo "  Dataset: https://huggingface.co/datasets/amanuelbyte/acl6060-voice-cloning-fr"
+echo "  Dataset: https://huggingface.co/datasets/$REPO_NAME"
 echo "============================================"
