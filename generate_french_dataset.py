@@ -139,6 +139,8 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
         example["speaker_name"] = s_name
         example["original_split"] = split_name
         example["original_index"] = example.get("index", idx)
+        # Composite key: unique across both original splits (dev/eval both start at 0)
+        example["_resume_key"] = f"{split_name}:{example['original_index']}"
         return example
 
     ds_dev = ds_dev.map(lambda x, i: map_speaker(x, i, "dev"), with_indices=True)
@@ -174,8 +176,11 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
     speaker_name = row.get("speaker_name", "Unknown")
     original_idx = row.get("original_index", idx)
     original_split = row.get("original_split", "unknown")
+    resume_key = row.get("_resume_key", f"{original_split}:{original_idx}")
     
     row_record = {
+        "_idx": idx,  # positional index for sorting
+        "_resume_key": resume_key,
         "speaker": speaker_id,
         "speaker_name": speaker_name,
         "original_split": original_split,
@@ -291,7 +296,6 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
 
     csv_path = os.path.join(split_dir, "metadata_cloned.csv")
     records = []
-    completed_indices = set()
     
     # --- Resume Logic ---
     if os.path.exists(csv_path):
@@ -304,16 +308,27 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
 
             completed_df = old_df[old_df.apply(is_complete, axis=1)]
             records = completed_df.to_dict(orient="records")
-            # We use original_index to identify samples uniquely across shuffles/splits
-            completed_indices = set(completed_df["original_index"].astype(str))
-            print(f"  ➜ Resuming [{split_name}]: Skipping {len(completed_indices)} already completed clips.")
+            # Use composite key (original_split:original_index) to avoid collisions
+            # between dev and eval splits which both start at index 0
+            if "_resume_key" in completed_df.columns:
+                completed_keys = set(completed_df["_resume_key"].astype(str))
+            else:
+                # Backward compat: build key from split+index columns
+                completed_keys = set(
+                    completed_df.apply(
+                        lambda r: f"{r['original_split']}:{r['original_index']}", axis=1
+                    )
+                )
+            print(f"  ➜ Resuming [{split_name}]: Skipping {len(completed_keys)} already completed clips.")
         except Exception as e:
             print(f"  ⚠ Resume failed (starting split fresh): {e}")
             records = []
-            completed_indices = set()
+            completed_keys = set()
+    else:
+        completed_keys = set()
 
     pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
-    pbar.update(len(completed_indices))
+    pbar.update(len(completed_keys))
 
     total = len(ds)
     checkpoint_step = max(1, int(total * (checkpoint_pct / 100.0))) if checkpoint_pct else None
@@ -321,9 +336,10 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
     # Identify which indices to process
     indices_to_process = []
     for idx in range(total):
-        # We check original_index for a robust match
-        orig_idx = str(ds[idx].get("original_index", idx))
-        if orig_idx not in completed_indices:
+        row_data = ds[idx]
+        # Use composite key to uniquely identify rows across both original splits
+        resume_key = row_data.get("_resume_key", f"{row_data.get('original_split', 'unknown')}:{row_data.get('original_index', idx)}")
+        if resume_key not in completed_keys:
             indices_to_process.append(idx)
     
     if indices_to_process:
@@ -339,7 +355,7 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
                 for idx in indices_to_process
             }
             
-            count = len(completed_indices)
+            count = len(completed_keys)
             for future in as_completed(futures):
                 res = future.result()
                 if res:
@@ -357,9 +373,12 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
 
     pbar.close()
 
-    # Save metadata
+    # Save metadata — sort by positional index for deterministic output
     if records:
         df = pd.DataFrame(records)
+        if "_idx" in df.columns:
+            df = df.sort_values("_idx").reset_index(drop=True)
+            df = df.drop(columns=["_idx", "_resume_key"], errors="ignore")
         csv_path = os.path.join(split_dir, "metadata_cloned.csv")
         df.to_csv(csv_path, index=False)
         print(f"  ✓ Saved {len(records)} records to {csv_path}")
