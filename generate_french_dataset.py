@@ -167,7 +167,7 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
 # ─── Generation ────────────────────────────────────────────────────────────────
 
 
-def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, language_id="fr", cfg_weight=0.0):
+def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, device="cuda", language_id="fr", cfg_weight=0.0):
     """Process a single row for voice cloning."""
     # Use pre-mapped speaker metadata
     speaker_id = row.get("speaker_id", f"speaker_{idx:04d}")
@@ -332,6 +332,7 @@ def generate_split(ds, split_name, output_dir, model, device, num_workers=8, lan
                 executor.submit(
                     process_row, idx, ds[idx], split_name, split_dir,
                     audio_en_dir, audio_dir, model, pbar,
+                    device=device,
                     language_id=language_id,
                     cfg_weight=cfg_weight
                 ): idx 
