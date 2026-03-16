@@ -40,6 +40,28 @@ TTS_MODEL_NAME = "resemble-ai/chatterbox-multilingual"
 NUM_TEST = 100
 RANDOM_SEED = 0
 
+# ─── Speaker Mapping ────────────────────────────────────────────────────────
+# (original_split, start_idx, end_idx, speaker_id, speaker_name)
+SPEAKER_MAP_DATA = [
+    ("dev",   0,   106, 1, "Elena"),
+    ("dev", 107, 188, 2, "Antoine"),
+    ("dev", 189, 254, 3, "Michał"),
+    ("dev", 255, 362, 4, "Jiawei"),
+    ("dev", 363, 467, 5, "unknown_1"),
+    ("eval",  0,  99, 6, "Allan"),
+    ("eval", 100, 183, 7, "Antoine_MUV"),
+    ("eval", 184, 239, 8, "unknown_2"),
+    ("eval", 240, 329, 9, "Kamezawa"),
+    ("eval", 330, 415, 10, "Asaf"),
+]
+
+def get_speaker_info(split, idx):
+    """Find speaker_id and speaker_name for a given original split and index."""
+    for s_split, start, end, s_id, name in SPEAKER_MAP_DATA:
+        if split == s_split and start <= idx <= end:
+            return f"speaker_{s_id:02d}", name
+    return "speaker_unknown", "Unknown"
+
 
 # ─── Model Loading ─────────────────────────────────────────────────────────────
 
@@ -110,6 +132,18 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
     print(f"  'dev' split:  {len(ds_dev)} rows")
     print(f"  'eval' split: {len(ds_eval)} rows")
 
+    # Attach speaker metadata based on original split and index
+    def map_speaker(example, idx, split_name):
+        s_id, s_name = get_speaker_info(split_name, example.get("index", idx))
+        example["speaker_id"] = s_id
+        example["speaker_name"] = s_name
+        example["original_split"] = split_name
+        example["original_index"] = example.get("index", idx)
+        return example
+
+    ds_dev = ds_dev.map(lambda x, i: map_speaker(x, i, "dev"), with_indices=True)
+    ds_eval = ds_eval.map(lambda x, i: map_speaker(x, i, "eval"), with_indices=True)
+
     ds_combined = concatenate_datasets([ds_dev, ds_eval])
     print(f"  Combined:     {len(ds_combined)} rows")
 
@@ -135,10 +169,19 @@ def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
 
 def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, language_id="fr", cfg_weight=0.0):
     """Process a single row for voice cloning."""
+    # Use pre-mapped speaker metadata
+    speaker_id = row.get("speaker_id", f"speaker_{idx:04d}")
+    speaker_name = row.get("speaker_name", "Unknown")
+    original_idx = row.get("original_index", idx)
+    original_split = row.get("original_split", "unknown")
+    
     row_record = {
-        "speaker": str(row.get("index", f"speaker_{idx}")),
+        "speaker": speaker_id,
+        "speaker_name": speaker_name,
+        "original_split": original_split,
+        "original_index": str(original_idx),
         "text_en": row.get("text_en", ""),
-        "fr_text": row.get("text_fr", ""),
+        "text_fr": row.get("text_fr", ""),
         "audio_en": "",
         "cloned_audio_fr": "",
     }
