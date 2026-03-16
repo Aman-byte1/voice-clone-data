@@ -284,42 +284,75 @@ def trigger_upload(output_dir, repo_name):
 
 
 def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0, repo_name=None, checkpoint_pct=None):
-    """Generate French cloned audio for a single split using parallel threads."""
+    """Generate French cloned audio for a single split using parallel threads. Supports Resuming."""
     split_dir = ensure_dir(os.path.join(output_dir, split_name))
     audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
     audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
 
-    pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
+    csv_path = os.path.join(split_dir, "metadata_cloned.csv")
+    records = []
+    completed_indices = set()
+    
+    # --- Resume Logic ---
+    if os.path.exists(csv_path):
+        try:
+            old_df = pd.read_csv(csv_path).fillna("")
+            # A row is complete if it has a cloned_audio_fr path and the file exists
+            def is_complete(row):
+                if not row.get("cloned_audio_fr"): return False
+                return os.path.exists(os.path.join(split_dir, row["cloned_audio_fr"]))
 
-    # Use ThreadPoolExecutor for parallel processing
-    # Multi-threading is often efficient for Torch inference as it releases the GIL
+            completed_df = old_df[old_df.apply(is_complete, axis=1)]
+            records = completed_df.to_dict(orient="records")
+            # We use original_index to identify samples uniquely across shuffles/splits
+            completed_indices = set(completed_df["original_index"].astype(str))
+            print(f"  ➜ Resuming [{split_name}]: Skipping {len(completed_indices)} already completed clips.")
+        except Exception as e:
+            print(f"  ⚠ Resume failed (starting split fresh): {e}")
+            records = []
+            completed_indices = set()
+
+    pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
+    pbar.update(len(completed_indices))
+
     total = len(ds)
     checkpoint_step = max(1, int(total * (checkpoint_pct / 100.0))) if checkpoint_pct else None
     
-    records = []
-    with ThreadPoolExecutor(max_workers=num_workers) as executor:
-        futures = {
-            executor.submit(
-                process_row, idx, ds[idx], split_name, split_dir,
-                audio_en_dir, audio_dir, model, pbar,
-                language_id=language_id,
-                cfg_weight=cfg_weight
-            ): idx 
-            for idx in range(total)
-        }
-        
-        count = 0
-        for future in as_completed(futures):
-            res = future.result()
-            records.append(res)
-            count += 1
+    # Identify which indices to process
+    indices_to_process = []
+    for idx in range(total):
+        # We check original_index for a robust match
+        orig_idx = str(ds[idx].get("original_index", idx))
+        if orig_idx not in completed_indices:
+            indices_to_process.append(idx)
+    
+    if indices_to_process:
+        with ThreadPoolExecutor(max_workers=num_workers) as executor:
+            futures = {
+                executor.submit(
+                    process_row, idx, ds[idx], split_name, split_dir,
+                    audio_en_dir, audio_dir, model, pbar,
+                    language_id=language_id,
+                    cfg_weight=cfg_weight
+                ): idx 
+                for idx in indices_to_process
+            }
             
-            # Periodic checkpoint upload
-            if checkpoint_step and count % checkpoint_step == 0 and count < total:
-                # Save partial CSV so the uploader sees current progress
-                temp_df = pd.DataFrame([r for r in records if r is not None])
-                temp_df.to_csv(os.path.join(split_dir, "metadata_cloned.csv"), index=False)
-                trigger_upload(output_dir, repo_name)
+            count = len(completed_indices)
+            for future in as_completed(futures):
+                res = future.result()
+                if res:
+                    records.append(res)
+                count += 1
+                
+                # Periodic checkpoint upload
+                if checkpoint_step and count % checkpoint_step == 0 and count < total:
+                    # Save partial CSV so the uploader sees current progress
+                    temp_df = pd.DataFrame([r for r in records if r is not None])
+                    temp_df.to_csv(csv_path, index=False)
+                    trigger_upload(output_dir, repo_name)
+    else:
+        print(f"  ✓ Split [{split_name}] already 100% complete.")
 
     pbar.close()
 
