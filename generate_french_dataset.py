@@ -242,12 +242,18 @@ def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model,
                 # NOTE: Exactly 0.0 can cause a tensor mismatch in some T3 versions.
                 # We use a tiny epsilon to achieve the same effect safely.
                 inference_cfg = cfg_weight if cfg_weight > 0 else 0.001
-                wav = model.generate(
-                    translated_text,
-                    audio_prompt_path=tmp_path,
-                    language_id=language_id,
-                    cfg_weight=inference_cfg
-                )
+                
+                with torch.no_grad():
+                    wav = model.generate(
+                        translated_text,
+                        audio_prompt_path=tmp_path,
+                        language_id=language_id,
+                        cfg_weight=inference_cfg
+                    )
+                
+                # Cleanup GPU memory immediately after generation
+                if device == "cuda":
+                    torch.cuda.empty_cache()
 
             # Save output
             ta.save(filepath, wav, model.sr)
