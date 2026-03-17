@@ -17,6 +17,15 @@ echo "════════════════════════�
 echo "  Setting up environment"
 echo "══════════════════════════════════════════════════════════"
 
+# Install system dependencies (FFmpeg)
+if command -v apt-get >/dev/null 2>&1; then
+    echo "Installing system dependencies (FFmpeg)..."
+    # Try with sudo if available, otherwise direct (for root)
+    IF_SUDO=$(command -v sudo >/dev/null 2>&1 && echo "sudo" || echo "")
+    $IF_SUDO apt-get update -qq
+    $IF_SUDO apt-get install -y -qq ffmpeg
+fi
+
 # Create and activate venv (skip if already in one)
 if [ -z "${VIRTUAL_ENV:-}" ]; then
     if [ ! -d ".venv" ]; then
