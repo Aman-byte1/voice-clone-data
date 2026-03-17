@@ -5,8 +5,8 @@ numpy
 soundfile
 pandas
 tqdm
-datasets
-torchcodec
+datasets<4.0.0
+librosa
 
 # Chatterbox Multilingual TTS
 # Option A — from PyPI (if available):
