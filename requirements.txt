@@ -6,6 +6,7 @@ soundfile
 pandas
 tqdm
 datasets
+torchcodec
 
 # Chatterbox Multilingual TTS
 # Option A — from PyPI (if available):
