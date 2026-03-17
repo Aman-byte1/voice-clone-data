@@ -1,20 +1,17 @@
-# Shared
-datasets
+# Core
+torch>=2.0.0
+torchaudio>=2.0.0
+numpy
 soundfile
 pandas
-huggingface_hub
 tqdm
-torch
-torchaudio
-librosa
+datasets
 
-# For MagpieTTS (generate_synthetic_dataset.py, clone_acl6060_voices.py)
-nemo_toolkit[tts]
-kaldialign
+# Chatterbox Multilingual TTS
+# Option A — from PyPI (if available):
+#   pip install chatterbox-tts
+# Option B — from GitHub (recommended for multilingual):
+chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git
 
-# For Scicom Multilingual-TTS (clone_with_scicom.py)
-transformers
-neucodec
-
-# For Chatterbox TTS (generate_french_dataset.py)
-chatterbox-tts
+# Watermarker dependency (may need patching on some systems)
+resemble-perth

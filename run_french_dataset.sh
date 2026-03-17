@@ -1,141 +1,83 @@
-#!/bin/bash
-# ============================================================================
-# Voice Clone Dataset Pipeline — French Train + Test Splits
-#
-# Generates French cloned voice audio for the ymoslem/acl-6060 dataset:
-#   - Merges both splits (884 total)
-#   - Shuffles with seed 0
-#   - Test: 100 samples, Train: 784 samples
-#   - TTS model: resemble-ai/chatterbox (Chatterbox AI)
-#
-# Usage (on server):
-#   bash run_french_dataset.sh
-# ============================================================================
+#!/usr/bin/env bash
+# ──────────────────────────────────────────────────────────────
+#  run.sh — set up environment and generate French cloned dataset
+# ──────────────────────────────────────────────────────────────
+set -euo pipefail
 
-set -e
+# ── Configuration (edit these) ────────────────────────────────
+OUTPUT_DIR="./output/acl6060_fr"
+DEVICE="cuda"                 # "cuda" or "cpu"
+LANG="fr"
+CFG=0.5                       # CFG weight for accent control
+SAVE_EVERY=10                 # checkpoint CSV every N clips
+REPO_NAME="amanuelbyte/acl-voice-cloning-fr-data"                  # e.g. "your-user/your-dataset" (leave empty to skip uploads)
 
-# ── Auto-detect Python binary ─────────────────────────────────────────────
-# Prefer specific versioned python (e.g. python3.13) over generic python3
-if command -v python3.13 &> /dev/null; then
-    PY=python3.13
-elif command -v python3.12 &> /dev/null; then
-    PY=python3.12
-elif command -v python3.11 &> /dev/null; then
-    PY=python3.11
-elif command -v python3.10 &> /dev/null; then
-    PY=python3.10
-elif command -v python3 &> /dev/null; then
-    PY=python3
-elif command -v python &> /dev/null; then
-    PY=python
-else
-    echo "ERROR: No python found on PATH"
-    exit 1
-fi
-echo "Using Python: $PY ($($PY --version))"
+# ── Setup ─────────────────────────────────────────────────────
+echo "══════════════════════════════════════════════════════════"
+echo "  Setting up environment"
+echo "══════════════════════════════════════════════════════════"
 
-echo "============================================"
-echo "  French Voice Cloning — Full Pipeline"
-echo "============================================"
-
-# ── 1. Install dependencies ────────────────────────────────────────────────
-echo ""
-echo "[1/4] Installing system dependencies (ffmpeg)..."
-if command -v apt-get &> /dev/null; then
-    SUDO_CMD=""
-    if command -v sudo &> /dev/null; then SUDO_CMD="sudo"; fi
-    $SUDO_CMD apt-get update && $SUDO_CMD apt-get install -y ffmpeg libavutil-dev libavcodec-dev libavformat-dev
-fi
-
-echo "[1/4] Installing python dependencies..."
-$PY -m pip install six python-dateutil --force-reinstall
-
-# --- Blackwell GPU (sm_120) Compatibility Support ---
-# Check if hardware is Blackwell (RTX 4500, etc.)
-IS_BLACKWELL=false
-if command -v nvidia-smi &> /dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader)
-    if echo "$GPU_NAME" | grep -qiE "4500|Blackwell|sm_120"; then
-        echo "✦ Blackwell GPU detected ($GPU_NAME). Applying specialized PyTorch (sm_120) install..."
-        IS_BLACKWELL=true
+# Create and activate venv (skip if already in one)
+if [ -z "${VIRTUAL_ENV:-}" ]; then
+    if [ ! -d ".venv" ]; then
+        echo "Creating virtual environment…"
+        python3 -m venv .venv
     fi
+    echo "Activating virtual environment…"
+    source .venv/bin/activate
 fi
 
-if [ "$IS_BLACKWELL" = true ]; then
-    # Blackwell requires the entire ecosystem (torch, torchvision, torchaudio) from the nightly cu128 index.
-    # Must use --pre and --upgrade to bypass installed stable versions.
-    $PY -m pip install --pre --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128 --force-reinstall
-else
-    # Standard install for stable GPUs (sm_50 through sm_90)
-    $PY -m pip install torch torchaudio
+# Upgrade pip
+pip install --upgrade pip
+
+# Install PyTorch with CUDA (adjust cu121/cu124 to match your driver)
+if [ "$DEVICE" = "cuda" ]; then
+    echo "Installing PyTorch with CUDA support…"
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
 fi
 
-# Install chatterbox without its strict numpy pin (incompatible with Python 3.13)
-$PY -m pip install chatterbox-tts --no-deps
-# Install actual runtime deps separately
-# NOTE: Pinning datasets < 3.2.0 to avoid mandatory torchcodec dependency
-# NOTE: Pinning transformers==4.46.3 as strictly required by chatterbox-tts 0.1.6
-$PY -m pip install numpy pandas huggingface_hub soundfile tqdm "datasets<3.2.0" \
-    "transformers==4.46.3" safetensors tokenizers conformer resemble-perth \
-    s3tokenizer diffusers pykakasi spacy-pkuseg gradio librosa \
-    soundfile omegaconf pyloudnorm
+# Install remaining dependencies
+echo "Installing dependencies…"
+pip install -r requirements.txt
 
-# ── 2. Set HuggingFace token ──────────────────────────────────────────────
+# ── Verify GPU ────────────────────────────────────────────────
+if [ "$DEVICE" = "cuda" ]; then
+    echo ""
+    python3 -c "
+import torch
+if torch.cuda.is_available():
+    name = torch.cuda.get_device_name(0)
+    mem  = torch.cuda.get_device_properties(0).total_mem / 1e9
+    print(f'  GPU: {name} ({mem:.1f} GB)')
+else:
+    print('  ⚠ CUDA not available — will fall back to CPU')
+"
+fi
+
+# ── Run ───────────────────────────────────────────────────────
 echo ""
-echo "[2/4] Setting up HuggingFace authentication..."
-if [ -z "$HF_TOKEN" ]; then
-    echo "ERROR: HF_TOKEN not set. Please run:"
-    echo "  export HF_TOKEN=hf_YOUR_TOKEN_HERE"
-    echo "Then re-run this script."
-    exit 1
-fi
-export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-$PY -c "from huggingface_hub import login; login(token='$HF_TOKEN')" || true
-echo "✓ HuggingFace token configured"
+echo "══════════════════════════════════════════════════════════"
+echo "  Starting generation"
+echo "══════════════════════════════════════════════════════════"
 
-# ── 3. Generate train + test splits ──────────────────────────────────────
-# Default sample counts (Full scale)
-NUM_TEST=${1:-100}
-NUM_TRAIN=${2:-784}
-NUM_WORKERS=${3:-4}
-REPO_NAME=${4:-"amanuelbyte/acl6060-voice-cloning-fr"}
-CHECKPOINT_PCT=${5:-10}
+CMD="python3 generate_french_dataset.py \
+    --output_dir $OUTPUT_DIR \
+    --device $DEVICE \
+    --lang $LANG \
+    --cfg $CFG \
+    --save_every $SAVE_EVERY"
 
-echo "       Test: $NUM_TEST samples, Train: $NUM_TRAIN samples"
-echo "       Parallel workers: $NUM_WORKERS"
-echo "       HF Repo: $REPO_NAME (Upload every $CHECKPOINT_PCT%)"
-
-# Auto-detect device
-DEVICE="cuda"
-if ! $PY -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-    echo "⚠ CUDA not available or NVIDIA drivers missing. Falling back to CPU."
-    DEVICE="cpu"
-else
-    echo "✓ CUDA detected. Using GPU acceleration."
+# Add repo_name if set
+if [ -n "$REPO_NAME" ]; then
+    CMD="$CMD --repo_name $REPO_NAME"
 fi
 
-$PY generate_french_dataset.py \
-    --output_dir ./output/acl6060_fr \
-    --num_test "$NUM_TEST" \
-    --num_train "$NUM_TRAIN" \
-    --num_workers "$NUM_WORKERS" \
-    --device "$DEVICE" \
-    --repo_name "$REPO_NAME" \
-    --checkpoint_pct "$CHECKPOINT_PCT"
-
-echo "✓ Generation complete"
-
-# ── 4. Final Push ─────────────────────────────────────────────────────────
+echo "Running: $CMD"
 echo ""
-echo "[4/4] Final push to HuggingFace..."
-$PY push_to_hub.py \
-    --output_dir ./output/acl6060_fr \
-    --repo_name "$REPO_NAME"
-
-echo "✓ Push complete"
+eval $CMD
 
 echo ""
-echo "============================================"
-echo "  ✓ Pipeline complete!"
-echo "  Dataset: https://huggingface.co/datasets/$REPO_NAME"
-echo "============================================"
+echo "══════════════════════════════════════════════════════════"
+echo "  ✓ Pipeline complete"
+echo "  Output: $OUTPUT_DIR"
+echo "══════════════════════════════════════════════════════════"

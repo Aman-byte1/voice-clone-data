@@ -1,26 +1,52 @@
+#!/usr/bin/env python3
 """
-Generate French cloned voice dataset with train/test splits.
+generate_french_dataset.py
+==========================
+Generate a French cloned-voice dataset with speaker-based train / test splits.
 
-Combines both splits of ymoslem/acl-6060 (884 total segments),
-shuffles with seed 0, selects 100 for test and 784 for train,
-then generates French cloned audio using Chatterbox Multilingual TTS.
+Source
+------
+ymoslem/acl-6060  (dev 468 + eval 416 = 884 utterances, 10 speakers)
 
-Usage (on server):
+Splitting strategy
+------------------
+• TEST  – the 2 speakers with the fewest utterances
+          (Letitia 56 + Michał 66 = 122 clips)
+• TRAIN – the remaining 8 speakers (762 clips)
+
+Original row order (dev → eval) is preserved within each split.
+
+Key design choices
+------------------
+• Fully sequential processing — no threading.  This eliminates OOM spikes,
+  row-mixing, and the false parallelism that a GPU lock creates anyway.
+• Aggressive VRAM cleanup (empty_cache + gc.collect) after every clip.
+• Incremental CSV checkpoint every N clips with full resume support.
+• Deterministic filenames based on original split + index (e.g. cloned_dev_107_fr.wav)
+  so they stay stable across resume runs.
+
+Usage
+-----
     python generate_french_dataset.py \
         --output_dir ./output/acl6060_fr \
-        --device cuda
+        --device cuda \
+        --cfg 0.5 \
+        --save_every 10
+
+    # With incremental HF uploads (requires push_to_hub.py alongside):
+    python generate_french_dataset.py \
+        --output_dir ./output/acl6060_fr \
+        --device cuda \
+        --repo_name your-username/your-dataset
 """
 
 import argparse
+import gc
 import os
 import sys
-import random
-import time
 import subprocess
 import tempfile
-import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -29,472 +55,445 @@ import torch
 import torchaudio as ta
 from datasets import load_dataset, concatenate_datasets
 from tqdm import tqdm
-import tqdm as tqdm_base
-from functools import partial
 
-# Force tqdm to always show a bar with a fixed width, even in non-interactive terminals
-tqdm_base.tqdm = partial(tqdm_base.tqdm, dynamic_ncols=False, ncols=100, ascii=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Constants & Speaker Map
+# ══════════════════════════════════════════════════════════════════════════════
 
 DATASET_NAME = "ymoslem/acl-6060"
-TTS_MODEL_NAME = "resemble-ai/chatterbox-multilingual"
-NUM_TEST = 100
-RANDOM_SEED = 0
+MODEL_NAME = "resemble-ai/chatterbox-multilingual"
 
-# ─── Speaker Mapping ────────────────────────────────────────────────────────
-# (original_split, start_idx, end_idx, speaker_id, speaker_name)
-SPEAKER_MAP_DATA = [
-    ("dev",   0,   106, 1, "Elena"),
-    ("dev", 107, 188, 2, "Antoine"),
-    ("dev", 189, 254, 3, "Michał"),
-    ("dev", 255, 362, 4, "Jiawei"),
-    ("dev", 363, 467, 5, "unknown_1"),
-    ("eval",  0,  99, 6, "Allan"),
-    ("eval", 100, 183, 7, "Antoine_MUV"),
-    ("eval", 184, 239, 8, "unknown_2"),
-    ("eval", 240, 329, 9, "Kamezawa"),
-    ("eval", 330, 415, 10, "Asaf"),
+# (original_split, start_idx, end_idx, speaker_num, speaker_name)
+# Ranges are inclusive: start_idx..end_idx
+SPEAKER_MAP = [
+    # ── DEV split ──
+    ("dev",    0,  106,  1, "Elena"),        # 107 utterances
+    ("dev",  107,  188,  2, "Antoine"),      #  82
+    ("dev",  189,  254,  3, "Michał"),       #  66
+    ("dev",  255,  362,  4, "Jiawei"),       # 108
+    ("dev",  363,  467,  5, "Bhargavi"),     # 105
+    # ── EVAL split ──
+    ("eval",   0,   99,  6, "Allan"),        # 100
+    ("eval", 100,  183,  7, "Antoine_MUV"),  #  84
+    ("eval", 184,  239,  8, "Letitia"),      #  56
+    ("eval", 240,  329,  9, "Kamezawa"),     #  90
+    ("eval", 330,  415, 10, "Asaf"),         #  86
 ]
 
-def get_speaker_info(split, idx):
-    """Find speaker_id and speaker_name for a given original split and index."""
-    for s_split, start, end, s_id, name in SPEAKER_MAP_DATA:
-        if split == s_split and start <= idx <= end:
-            return f"speaker_{s_id:02d}", name
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Speaker Helpers
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _sid(num: int) -> str:
+    """Formatted speaker ID string."""
+    return f"speaker_{num:02d}"
+
+
+def get_speaker(split: str, idx: int):
+    """Return (speaker_id, speaker_name) for a positional index in a split."""
+    for s, lo, hi, num, name in SPEAKER_MAP:
+        if s == split and lo <= idx <= hi:
+            return _sid(num), name
     return "speaker_unknown", "Unknown"
 
 
-# ─── Model Loading ─────────────────────────────────────────────────────────────
+def auto_test_speakers(n: int = 2) -> list[str]:
+    """Return the speaker IDs of the N speakers with the fewest utterances."""
+    sizes: dict[str, tuple[int, str]] = {}
+    for _, lo, hi, num, name in SPEAKER_MAP:
+        sid = _sid(num)
+        sizes[sid] = (hi - lo + 1, name)
 
-_model = None
-_model_lock = threading.Lock()
+    ranked = sorted(sizes.items(), key=lambda kv: kv[1][0])
+    chosen = [sid for sid, _ in ranked[:n]]
 
-
-def load_model(device: str = "cuda"):
-    """Load the Chatterbox Multilingual TTS model."""
-    global _model
-
-    if _model is not None:
-        return _model
-
-    # Auto-fallback if cuda requested but not available
-    if device == "cuda" and not torch.cuda.is_available():
-        print("⚠ CUDA requested but not available. Falling back to CPU.")
-        device = "cpu"
-
-    # Monkeypatch torch.load to handle CPU-only environments for Chatterbox checkpoints
-    if device == "cpu":
-        original_load = torch.load
-        def patched_load(*args, **kwargs):
-            if 'map_location' not in kwargs:
-                kwargs['map_location'] = 'cpu'
-            return original_load(*args, **kwargs)
-        torch.load = patched_load
-        print("✓ Applied torch.load monkeypatch for CPU execution.")
-
-    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-
-    # The user is using ChatterboxMultilingualTTS now
-    print(f"Loading Chatterbox Multilingual TTS model...")
-
-    # Python 3.13 / RunPod: resemble-perth often fails to load its watermarker,
-    # leading to TypeError: 'NoneType' object is not callable.
-    try:
-        import perth
-        if not hasattr(perth, "PerthImplicitWatermarker") or perth.PerthImplicitWatermarker is None:
-            print("⚠ resemble-perth is broken. Applying dummy watermarker monkeypatch.")
-            class DummyWatermarker:
-                def __init__(self, *args, **kwargs): pass
-                def __call__(self, audio, *args, **kwargs): return audio
-            perth.PerthImplicitWatermarker = DummyWatermarker
-    except ImportError:
-        pass
-
-    # ChatterboxMultilingualTTS.from_pretrained()
-    _model = ChatterboxMultilingualTTS.from_pretrained(device=device)
-    print("Model loaded successfully.")
-    return _model
+    print("  Auto-selected test speakers (smallest):")
+    for sid, (cnt, name) in ranked[:n]:
+        print(f"    {sid}  {name:<15s}  {cnt} utterances")
+    return chosen
 
 
-# ─── Dataset Loading ───────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Filesystem Helpers
+# ══════════════════════════════════════════════════════════════════════════════
 
-
-def ensure_dir(path):
+def _ensure(path: str) -> str:
     os.makedirs(path, exist_ok=True)
     return path
 
 
-def load_and_split_dataset(num_train=None, num_test=NUM_TEST):
-    """Load both splits, merge, shuffle with seed 0, split into train/test."""
-    print(f"Loading {DATASET_NAME} dataset...")
+def _safe_key(key: str) -> str:
+    """Convert resume key 'dev:107' → 'dev_107' for safe filenames."""
+    return key.replace(":", "_")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Dataset Loading
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_dataset_with_speakers():
+    """Load both splits, annotate with speaker metadata, concatenate in order."""
+    print(f"Loading dataset: {DATASET_NAME}")
     ds_dev = load_dataset(DATASET_NAME, split="dev")
     ds_eval = load_dataset(DATASET_NAME, split="eval")
+    print(f"  dev={len(ds_dev)}  eval={len(ds_eval)}  total={len(ds_dev) + len(ds_eval)}")
 
-    print(f"  'dev' split:  {len(ds_dev)} rows")
-    print(f"  'eval' split: {len(ds_eval)} rows")
+    def annotate(row, idx, split):
+        sid, sname = get_speaker(split, idx)
+        row["speaker_id"] = sid
+        row["speaker_name"] = sname
+        row["original_split"] = split
+        row["original_index"] = idx
+        row["_key"] = f"{split}:{idx}"
+        return row
 
-    # Attach speaker metadata based on original split and index
-    def map_speaker(example, idx, split_name):
-        s_id, s_name = get_speaker_info(split_name, example.get("index", idx))
-        example["speaker_id"] = s_id
-        example["speaker_name"] = s_name
-        example["original_split"] = split_name
-        example["original_index"] = example.get("index", idx)
-        # Composite key: unique across both original splits (dev/eval both start at 0)
-        example["_resume_key"] = f"{split_name}:{example['original_index']}"
-        return example
-
-    ds_dev = ds_dev.map(lambda x, i: map_speaker(x, i, "dev"), with_indices=True)
-    ds_eval = ds_eval.map(lambda x, i: map_speaker(x, i, "eval"), with_indices=True)
-
-    ds_combined = concatenate_datasets([ds_dev, ds_eval])
-    print(f"  Combined:     {len(ds_combined)} rows")
-
-    ds_shuffled = ds_combined.shuffle(seed=RANDOM_SEED)
-    
-    # Selection logic
-    ds_test = ds_shuffled.select(range(num_test))
-    
-    # If num_train is specified, select exactly that many after the test set
-    # Otherwise select everything else
-    if num_train is not None:
-        ds_train = ds_shuffled.select(range(num_test, num_test + num_train))
-    else:
-        ds_train = ds_shuffled.select(range(num_test, len(ds_shuffled)))
-
-    print(f"  Test split:   {len(ds_test)} rows")
-    print(f"  Train split:  {len(ds_train)} rows")
-    return ds_train, ds_test
+    ds_dev = ds_dev.map(lambda r, i: annotate(r, i, "dev"), with_indices=True)
+    ds_eval = ds_eval.map(lambda r, i: annotate(r, i, "eval"), with_indices=True)
+    return concatenate_datasets([ds_dev, ds_eval])
 
 
-# ─── Generation ────────────────────────────────────────────────────────────────
+# ══════════════════════════════════════════════════════════════════════════════
+# Model Loading
+# ══════════════════════════════════════════════════════════════════════════════
 
+def load_model(device: str):
+    """Load ChatterboxMultilingualTTS. Returns (model, actual_device_str)."""
+    if device == "cuda" and not torch.cuda.is_available():
+        print("⚠  CUDA not available — falling back to CPU")
+        device = "cpu"
 
-def process_row(idx, row, split_name, split_dir, audio_en_dir, audio_dir, model, pbar, device="cuda", language_id="fr", cfg_weight=0.0):
-    """Process a single row for voice cloning."""
-    # Use pre-mapped speaker metadata
-    speaker_id = row.get("speaker_id", f"speaker_{idx:04d}")
-    speaker_name = row.get("speaker_name", "Unknown")
-    original_idx = row.get("original_index", idx)
-    original_split = row.get("original_split", "unknown")
-    resume_key = row.get("_resume_key", f"{original_split}:{original_idx}")
-    
-    row_record = {
-        "_idx": idx,  # positional index for sorting
-        "_resume_key": resume_key,
-        "speaker": speaker_id,
-        "speaker_name": speaker_name,
-        "original_split": original_split,
-        "original_index": str(original_idx),
-        "text_en": row.get("text_en", ""),
-        "text_fr": row.get("text_fr", ""),
-        "audio_en": "",
-        "cloned_audio_fr": "",
-    }
-
-    # Get source audio for voice cloning
-    audio_val = row.get("audio")
-    
-    # Robust audio loading: handle dict or AudioDecoder objects
-    audio_array = None
-    sr = None
-
+    # ── Perth watermarker workaround (RunPod / Python 3.13) ──
     try:
-        if isinstance(audio_val, dict):
-            audio_array = np.array(audio_val.get("array"), dtype=np.float32)
-            sr = audio_val.get("sampling_rate")
-        elif audio_val is not None:
-            # Try accessing as dict-like or object-like (for AudioDecoder)
-            try:
-                audio_array = np.array(audio_val["array"], dtype=np.float32)
-                sr = audio_val["sampling_rate"]
-            except (KeyError, TypeError):
-                audio_array = np.array(getattr(audio_val, "array", None), dtype=np.float32)
-                sr = getattr(audio_val, "sampling_rate", None)
-    except Exception as e:
-        row_record["error"] = f"Audio access error: {e}"
+        import perth
+        if getattr(perth, "PerthImplicitWatermarker", None) is None:
+            class _Dummy:
+                def __init__(self, *a, **k):
+                    pass
+                def __call__(self, audio, *a, **k):
+                    return audio
+            perth.PerthImplicitWatermarker = _Dummy
+            print("⚠  Patched broken perth watermarker")
+    except ImportError:
+        pass
 
-    if audio_array is None or sr is None or len(audio_array) == 0:
-        pbar.update(1)
-        return row_record
+    # ── CPU torch.load fix ──
+    if device == "cpu":
+        _orig_load = torch.load
+        def _patched_load(*a, **kw):
+            kw.setdefault("map_location", "cpu")
+            return _orig_load(*a, **kw)
+        torch.load = _patched_load
 
-    translated_text = row.get("text_fr", "")
-    if not translated_text:
-        row_record["error"] = "No French text"
-        pbar.update(1)
-        return row_record
+    from chatterbox.mtl_tts import ChatterboxMultilingualTTS
 
-    audio_en_filename = f"original_{idx:05d}_en.wav"
-    audio_en_filepath = os.path.join(audio_en_dir, audio_en_filename)
-    
-    filename = f"cloned_{idx:05d}_fr.wav"
-    filepath = os.path.join(audio_dir, filename)
+    if device == "cuda":
+        gpu_name = torch.cuda.get_device_name(0)
+        gpu_mem = torch.cuda.get_device_properties(0).total_mem / 1e9
+        print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
 
+    print(f"Loading {MODEL_NAME} on {device}…")
+    model = ChatterboxMultilingualTTS.from_pretrained(device=device)
+    print("✓ Model loaded\n")
+    return model, device
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Audio Extraction
+# ══════════════════════════════════════════════════════════════════════════════
+
+def extract_audio(audio_field):
+    """Extract (np.float32 array, sample_rate) from a HF audio column value."""
+    if audio_field is None:
+        return None, None
     try:
-        # Write reference audio permanently
-        sf.write(audio_en_filepath, audio_array, sr)
-        row_record["audio_en"] = os.path.relpath(audio_en_filepath, split_dir)
-        
-        # Use a thread-safe way for temp files or just unique names
-        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".wav")
-        try:
-            os.close(tmp_fd)
-            sf.write(tmp_path, audio_array, sr)
-
-            # Generate cloned French speech
-            # NOTE: ChatterboxTTS is NOT thread-safe for concurrent inference on a single instance.
-            # We use a lock to ensure only one thread generates at a time, while others handle I/O.
-            with _model_lock:
-                # NOTE: Exactly 0.0 can cause a tensor mismatch in some T3 versions.
-                # We use a tiny epsilon to achieve the same effect safely.
-                inference_cfg = cfg_weight if cfg_weight > 0 else 0.001
-                
-                with torch.no_grad():
-                    wav = model.generate(
-                        translated_text,
-                        audio_prompt_path=tmp_path,
-                        language_id=language_id,
-                        cfg_weight=inference_cfg
-                    )
-                
-                # Cleanup GPU memory immediately after generation
-                if device == "cuda":
-                    torch.cuda.empty_cache()
-
-            # Save output
-            ta.save(filepath, wav, model.sr)
-            row_record["cloned_audio_fr"] = os.path.relpath(filepath, split_dir)
-        finally:
-            if os.path.exists(tmp_path):
-                os.unlink(tmp_path)
-
+        if isinstance(audio_field, dict):
+            return (
+                np.asarray(audio_field["array"], dtype=np.float32),
+                audio_field["sampling_rate"],
+            )
+        # Object-style access (e.g. AudioDecoder)
+        arr = getattr(audio_field, "array", None)
+        sr = getattr(audio_field, "sampling_rate", None)
+        if arr is not None and sr is not None:
+            return np.asarray(arr, dtype=np.float32), sr
     except Exception:
-        row_record["error"] = traceback.format_exc()
-
-    pbar.update(1)
-    return row_record
-
-def trigger_upload(output_dir, repo_name):
-    """Trigger the push_to_hub.py script to update HuggingFace."""
-    if not repo_name:
-        return
-    print(f"\n[Incremental Upload] Pushing to {repo_name}...")
-    try:
-        subprocess.run(
-            [sys.executable, "push_to_hub.py", "--output_dir", output_dir, "--repo_name", repo_name],
-            check=True
-        )
-        print(f"[Incremental Upload] ✓ Sync complete.")
-    except Exception as e:
-        print(f"[Incremental Upload] ⚠ Push failed: {e}")
+        pass
+    return None, None
 
 
-def generate_split(ds, split_name, output_dir, model, device, num_workers=8, language_id="fr", cfg_weight=0.0, repo_name=None, checkpoint_pct=None):
-    """Generate French cloned audio for a single split using parallel threads. Supports Resuming."""
-    split_dir = ensure_dir(os.path.join(output_dir, split_name))
-    audio_en_dir = ensure_dir(os.path.join(split_dir, "original_audio_en"))
-    audio_dir = ensure_dir(os.path.join(split_dir, "cloned_audio_fr"))
+# ══════════════════════════════════════════════════════════════════════════════
+# Core Generation Loop
+# ══════════════════════════════════════════════════════════════════════════════
 
-    csv_path = os.path.join(split_dir, "metadata_cloned.csv")
-    records = []
-    
-    # --- Resume Logic ---
+def generate_split(
+    ds,
+    split_name: str,
+    output_dir: str,
+    model,
+    device: str,
+    lang: str = "fr",
+    cfg: float = 0.5,
+    save_every: int = 10,
+    repo_name: str | None = None,
+):
+    """Generate cloned audio for one split.  Fully sequential & resumable."""
+    split_dir = _ensure(os.path.join(output_dir, split_name))
+    en_dir = _ensure(os.path.join(split_dir, "original_audio_en"))
+    fr_dir = _ensure(os.path.join(split_dir, "cloned_audio_fr"))
+    csv_path = os.path.join(split_dir, "metadata.csv")
+
+    # ── Resume: collect already-completed rows ──────────────────────────
+    done: dict[str, dict] = {}  # _key → record
     if os.path.exists(csv_path):
         try:
-            old_df = pd.read_csv(csv_path).fillna("")
-            # A row is complete if it has a cloned_audio_fr path and the file exists
-            def is_complete(row):
-                if not row.get("cloned_audio_fr"): return False
-                return os.path.exists(os.path.join(split_dir, row["cloned_audio_fr"]))
-
-            completed_df = old_df[old_df.apply(is_complete, axis=1)]
-            records = completed_df.to_dict(orient="records")
-            # Use composite key (original_split:original_index) to avoid collisions
-            # between dev and eval splits which both start at index 0
-            if "_resume_key" in completed_df.columns:
-                completed_keys = set(completed_df["_resume_key"].astype(str))
-            else:
-                # Backward compat: build key from split+index columns
-                completed_keys = set(
-                    completed_df.apply(
-                        lambda r: f"{r['original_split']}:{r['original_index']}", axis=1
-                    )
-                )
-            print(f"  ➜ Resuming [{split_name}]: Skipping {len(completed_keys)} already completed clips.")
+            old_df = pd.read_csv(csv_path, dtype=str).fillna("")
+            for _, r in old_df.iterrows():
+                rd = r.to_dict()
+                fr_rel = rd.get("cloned_audio_fr", "")
+                if fr_rel and os.path.isfile(os.path.join(split_dir, fr_rel)):
+                    done[rd["_key"]] = rd
+            print(f"  ↻ Resume [{split_name}]: {len(done)}/{len(ds)} clips already done")
         except Exception as e:
-            print(f"  ⚠ Resume failed (starting split fresh): {e}")
-            records = []
-            completed_keys = set()
-    else:
-        completed_keys = set()
-
-    pbar = tqdm(total=len(ds), desc=f"Cloning French [{split_name}]", unit="clip")
-    pbar.update(len(completed_keys))
+            print(f"  ⚠ Resume failed ({e}); starting fresh")
+            done = {}
 
     total = len(ds)
-    checkpoint_step = max(1, int(total * (checkpoint_pct / 100.0))) if checkpoint_pct else None
-    
-    # Identify which indices to process
-    indices_to_process = []
-    for idx in range(total):
-        row_data = ds[idx]
-        # Use composite key to uniquely identify rows across both original splits
-        resume_key = row_data.get("_resume_key", f"{row_data.get('original_split', 'unknown')}:{row_data.get('original_index', idx)}")
-        if resume_key not in completed_keys:
-            indices_to_process.append(idx)
-    
-    if indices_to_process:
-        with ThreadPoolExecutor(max_workers=num_workers) as executor:
-            futures = {
-                executor.submit(
-                    process_row, idx, ds[idx], split_name, split_dir,
-                    audio_en_dir, audio_dir, model, pbar,
-                    device=device,
-                    language_id=language_id,
-                    cfg_weight=cfg_weight
-                ): idx 
-                for idx in indices_to_process
-            }
-            
-            count = len(completed_keys)
-            for future in as_completed(futures):
-                res = future.result()
-                if res:
-                    records.append(res)
-                count += 1
-                
-                # Periodic checkpoint upload
-                if checkpoint_step and count % checkpoint_step == 0 and count < total:
-                    # Save partial CSV so the uploader sees current progress
-                    temp_df = pd.DataFrame([r for r in records if r is not None])
-                    if "_idx" in temp_df.columns:
-                        temp_df = temp_df.drop(columns=["_idx", "_resume_key"], errors="ignore")
-                    temp_df.to_csv(csv_path, index=False)
-                    trigger_upload(output_dir, repo_name)
-    else:
-        print(f"  ✓ Split [{split_name}] already 100% complete.")
+    records: list[dict] = []
+    new_count = 0
+
+    pbar = tqdm(
+        total=total,
+        initial=len(done),
+        desc=split_name,
+        unit="clip",
+        ncols=100,
+        ascii=True,
+    )
+
+    for pos in range(total):
+        row = ds[pos]
+        key: str = row["_key"]
+
+        # ── Already completed → reuse old record ──
+        if key in done:
+            records.append(done[key])
+            continue
+
+        # ── Build new record ──
+        rec = {
+            "_key":            key,
+            "speaker_id":      row["speaker_id"],
+            "speaker_name":    row["speaker_name"],
+            "original_split":  row["original_split"],
+            "original_index":  int(row["original_index"]),
+            "text_en":         row.get("text_en", ""),
+            "text_fr":         row.get("text_fr", ""),
+            "audio_en":        "",
+            "cloned_audio_fr": "",
+            "error":           "",
+        }
+
+        audio_arr, sr = extract_audio(row.get("audio"))
+        text_fr = row.get("text_fr", "")
+
+        if audio_arr is None or sr is None or len(audio_arr) == 0:
+            rec["error"] = "missing or empty source audio"
+            records.append(rec)
+            pbar.update(1)
+            continue
+
+        if not text_fr.strip():
+            rec["error"] = "missing French text"
+            records.append(rec)
+            pbar.update(1)
+            continue
+
+        # Deterministic filenames based on original identity
+        safe = _safe_key(key)
+        en_fname = f"original_{safe}_en.wav"
+        fr_fname = f"cloned_{safe}_fr.wav"
+        en_path = os.path.join(en_dir, en_fname)
+        fr_path = os.path.join(fr_dir, fr_fname)
+
+        try:
+            # Save English reference audio
+            sf.write(en_path, audio_arr, sr)
+            rec["audio_en"] = os.path.relpath(en_path, split_dir)
+
+            # Temp file for model prompt
+            fd, tmp = tempfile.mkstemp(suffix=".wav")
+            os.close(fd)
+            try:
+                sf.write(tmp, audio_arr, sr)
+
+                # ── Inference (single clip, no parallelism) ──
+                with torch.no_grad():
+                    wav = model.generate(
+                        text_fr,
+                        audio_prompt_path=tmp,
+                        language_id=lang,
+                        cfg_weight=max(cfg, 0.001),  # avoid exact 0.0
+                    )
+
+                # Ensure correct shape for torchaudio.save
+                if wav.dim() == 1:
+                    wav = wav.unsqueeze(0)
+
+                ta.save(fr_path, wav, model.sr)
+                rec["cloned_audio_fr"] = os.path.relpath(fr_path, split_dir)
+
+                del wav
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+
+        except Exception:
+            rec["error"] = traceback.format_exc()
+
+        # ── Aggressive memory cleanup after every clip ──
+        del audio_arr
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        gc.collect()
+
+        records.append(rec)
+        new_count += 1
+        pbar.update(1)
+
+        # ── Periodic checkpoint ──
+        if save_every and new_count % save_every == 0:
+            _save(records, csv_path)
+            if repo_name:
+                _push(output_dir, repo_name)
 
     pbar.close()
 
-    # Save metadata — sort by positional index for deterministic output
-    if records:
-        df = pd.DataFrame(records)
-        if "_idx" in df.columns:
-            df = df.sort_values("_idx").reset_index(drop=True)
-            df = df.drop(columns=["_idx", "_resume_key"], errors="ignore")
-        csv_path = os.path.join(split_dir, "metadata_cloned.csv")
-        df.to_csv(csv_path, index=False)
-        print(f"  ✓ Saved {len(records)} records to {csv_path}")
+    # ── Final save ──
+    _save(records, csv_path)
+    _save_json(records, os.path.join(split_dir, "metadata.json"))
 
-        json_path = os.path.join(split_dir, "metadata_cloned.json")
-        df.to_json(json_path, orient="records", force_ascii=False, indent=2)
-        print(f"  ✓ Saved JSON to {json_path}")
+    ok = sum(1 for r in records if r.get("cloned_audio_fr"))
+    errors = sum(1 for r in records if r.get("error"))
+    print(f"  ✓ [{split_name}] {ok}/{total} clips generated  ({errors} errors)")
 
-        filled = df["cloned_audio_fr"].astype(bool).sum()
-        print(f"  ✓ Successful clones: {filled}/{len(records)}")
-    else:
-        print(f"  ⚠ No records for {split_name}")
 
+def _save(records: list[dict], path: str):
+    """Save records to CSV (preserves insertion order = dataset order)."""
+    df = pd.DataFrame(records)
+    df.to_csv(path, index=False)
+
+
+def _save_json(records: list[dict], path: str):
+    """Save records to JSON."""
+    df = pd.DataFrame(records)
+    df.to_json(path, orient="records", force_ascii=False, indent=2)
+
+
+def _push(output_dir: str, repo_name: str):
+    """Call push_to_hub.py if it exists alongside this script."""
+    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "push_to_hub.py")
+    if not os.path.isfile(script):
+        return
+    try:
+        subprocess.run(
+            [sys.executable, script, "--output_dir", output_dir, "--repo_name", repo_name],
+            check=True,
+            timeout=300,
+        )
+        print(f"  ↑ Pushed to {repo_name}")
+    except Exception as e:
+        print(f"  ⚠ Push failed: {e}")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLI
+# ══════════════════════════════════════════════════════════════════════════════
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Generate French cloned voice dataset (train + test) using Chatterbox TTS."
+    p = argparse.ArgumentParser(
+        description="Generate French cloned-voice dataset with Chatterbox Multilingual TTS",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--output_dir", type=str, default="./output/acl6060_fr",
-        help="Root output directory.",
-    )
-    parser.add_argument(
-        "--num_test",
-        type=int,
-        default=NUM_TEST,
-        help=f"Number of samples for the test split (default: {NUM_TEST}).",
-    )
-    parser.add_argument(
-        "--num_train",
-        type=int,
-        default=None,
-        help="Number of samples for the train split (default: all remaining).",
-    )
-    parser.add_argument(
-        "--num_workers",
-        type=int,
-        default=4,
-        help="Number of parallel worker threads (default: 4).",
-    )
-    parser.add_argument(
-        "--device",
-        type=str,
-        default="cuda",
-        help="Device for inference (e.g. 'cuda', 'cpu').",
-    )
-    parser.add_argument(
-        "--language_id",
-        type=str,
-        default="fr",
-        help="Target language ID (e.g. 'fr' for French, 'en' for English).",
-    )
-    parser.add_argument(
-        "--cfg_weight",
-        type=float,
-        default=0.1,
-        help="CFG weight (0.1 recommended for strong accent mitigation).",
-    )
-    parser.add_argument(
-        "--repo_name",
-        type=str,
-        default=None,
-        help="Optional: HuggingFace repo name for incremental uploads.",
-    )
-    parser.add_argument(
-        "--checkpoint_pct",
-        type=int,
-        default=None,
-        help="Optional: Upload to HF every X percent of completion.",
-    )
-    return parser.parse_args()
+    p.add_argument("--output_dir", default="./output/acl6060_fr",
+                    help="Root output directory")
+    p.add_argument("--device", default="cuda", choices=["cuda", "cpu"],
+                    help="Inference device")
+    p.add_argument("--lang", default="fr",
+                    help="Target language ID")
+    p.add_argument("--cfg", type=float, default=0.5,
+                    help="CFG weight (0.5 recommended for accent control)")
+    p.add_argument("--save_every", type=int, default=10,
+                    help="Checkpoint CSV every N new clips")
+    p.add_argument("--repo_name", default=None,
+                    help="HuggingFace repo for incremental uploads")
+    p.add_argument("--n_test_speakers", type=int, default=2,
+                    help="Number of smallest speakers to put in test set")
+    p.add_argument("--only", choices=["train", "test"], default=None,
+                    help="Generate only one split (useful for debugging)")
+    return p.parse_args()
 
 
 def main():
     args = parse_args()
 
-    print("=" * 60)
-    print("  French Voice Cloning — Train + Test Splits")
-    print("=" * 60)
-    print(f"  Source dataset:   {DATASET_NAME}")
-    print(f"  TTS model:       {TTS_MODEL_NAME}")
-    print(f"  Target language: fr (French)")
-    print(f"  Random seed:     {RANDOM_SEED}")
-    print(f"  Test samples:    {args.num_test}")
-    print(f"  Train samples:   {args.num_train or 'all remaining'}")
-    print(f"  Output dir:      {args.output_dir}")
-    print(f"  Device:          {args.device}")
-    print("=" * 60)
+    print("=" * 64)
+    print("  French Voice Cloning — Speaker-based Train / Test")
+    print("=" * 64)
+    print(f"  Dataset:    {DATASET_NAME}")
+    print(f"  Model:      {MODEL_NAME}")
+    print(f"  Language:   {args.lang}")
+    print(f"  CFG weight: {args.cfg}")
+    print(f"  Device:     {args.device}")
+    print(f"  Output:     {args.output_dir}")
+    print("=" * 64)
 
-    ds_train, ds_test = load_and_split_dataset(num_train=args.num_train, num_test=args.num_test)
-    model = load_model(device=args.device)
+    # 1. Determine which speakers go to test
+    test_ids = auto_test_speakers(args.n_test_speakers)
 
-    print(f"\n── Generating TEST split ──")
-    generate_split(ds_test, "test", args.output_dir, model, args.device, 
-                   num_workers=args.num_workers, language_id=args.language_id, 
-                   cfg_weight=args.cfg_weight)
-    
-    # Always upload after test set if repo_name is provided
-    if args.repo_name:
-        trigger_upload(args.output_dir, args.repo_name)
+    # 2. Load & annotate full dataset
+    ds_all = load_dataset_with_speakers()
 
-    print(f"\n── Generating TRAIN split ──")
-    generate_split(ds_train, "train", args.output_dir, model, args.device, 
-                   num_workers=args.num_workers, language_id=args.language_id, 
-                   cfg_weight=args.cfg_weight, repo_name=args.repo_name, 
-                   checkpoint_pct=args.checkpoint_pct)
+    # 3. Split by speaker (preserves original order within each split)
+    ds_test = ds_all.filter(lambda x: x["speaker_id"] in test_ids)
+    ds_train = ds_all.filter(lambda x: x["speaker_id"] not in test_ids)
 
-    # Final upload to ensure 100% completion is pushed
-    if args.repo_name:
-        trigger_upload(args.output_dir, args.repo_name)
+    # Print speaker distribution
+    print(f"\n  Train: {len(ds_train)} clips  |  Test: {len(ds_test)} clips")
+    print()
 
-    print("\n" + "=" * 60)
+    # 4. Load model
+    model, device = load_model(args.device)
+
+    # 5. Generate splits
+    if args.only != "train":
+        print(f"{'─' * 64}")
+        print(f"  TEST split  ({len(ds_test)} clips)")
+        print(f"{'─' * 64}")
+        generate_split(
+            ds_test, "test", args.output_dir, model, device,
+            lang=args.lang, cfg=args.cfg, save_every=args.save_every,
+            repo_name=args.repo_name,
+        )
+        if args.repo_name:
+            _push(args.output_dir, args.repo_name)
+
+    if args.only != "test":
+        print(f"\n{'─' * 64}")
+        print(f"  TRAIN split  ({len(ds_train)} clips)")
+        print(f"{'─' * 64}")
+        generate_split(
+            ds_train, "train", args.output_dir, model, device,
+            lang=args.lang, cfg=args.cfg, save_every=args.save_every,
+            repo_name=args.repo_name,
+        )
+        if args.repo_name:
+            _push(args.output_dir, args.repo_name)
+
+    print(f"\n{'=' * 64}")
     print("  ✓ All done!")
-    print("=" * 60)
+    print(f"{'=' * 64}")
 
 
 if __name__ == "__main__":
